@@ -63,6 +63,7 @@ import org.teavm.ast.UnaryExpr;
 import org.teavm.ast.UnwrapArrayExpr;
 import org.teavm.ast.VariableExpr;
 import org.teavm.ast.WhileStatement;
+import org.teavm.backend.common.Mangling;
 import org.teavm.backend.wasm.WasmRuntime;
 import org.teavm.backend.wasm.binary.BinaryWriter;
 import org.teavm.backend.wasm.binary.DataPrimitives;
@@ -182,7 +183,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
                     default:
                         Class<?> type = convertType(expr.getType());
                         MethodReference method = new MethodReference(WasmRuntime.class, "remainder", type, type, type);
-                        WasmCall call = new WasmCall(WasmMangling.mangleMethod(method), false);
+                        WasmCall call = new WasmCall(Mangling.mangleMethod(method), false);
 
                         accept(expr.getFirstOperand());
                         call.getArguments().add(result);
@@ -236,7 +237,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
             case COMPARE: {
                 Class<?> type = convertType(expr.getType());
                 MethodReference method = new MethodReference(WasmRuntime.class, "compare", type, type, int.class);
-                WasmCall call = new WasmCall(WasmMangling.mangleMethod(method), false);
+                WasmCall call = new WasmCall(Mangling.mangleMethod(method), false);
 
                 accept(expr.getFirstOperand());
                 call.getArguments().add(result);
@@ -835,7 +836,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
         }
 
         if (expr.getType() == InvocationType.STATIC || expr.getType() == InvocationType.SPECIAL) {
-            String methodName = WasmMangling.mangleMethod(expr.getMethod());
+            String methodName = Mangling.mangleMethod(expr.getMethod());
 
             WasmCall call = new WasmCall(methodName);
             if (context.getImportedMethod(expr.getMethod()) != null) {
@@ -854,7 +855,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
             block.getBody().add(new WasmSetLocal(tmp, allocateObject(expr.getMethod().getClassName(),
                     expr.getLocation())));
 
-            String methodName = WasmMangling.mangleMethod(expr.getMethod());
+            String methodName = Mangling.mangleMethod(expr.getMethod());
             WasmCall call = new WasmCall(methodName);
             call.getArguments().add(new WasmGetLocal(tmp));
             for (Expr argument : expr.getArguments()) {
@@ -1124,7 +1125,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
 
     private WasmExpression allocateObject(String className, TextLocation location) {
         int tag = classGenerator.getClassPointer(ValueType.object(className));
-        String allocName = WasmMangling.mangleMethod(new MethodReference(Allocator.class, "allocate",
+        String allocName = Mangling.mangleMethod(new MethodReference(Allocator.class, "allocate",
                 RuntimeClass.class, Address.class));
         WasmCall call = new WasmCall(allocName);
         call.getArguments().add(new WasmInt32Constant(tag));
@@ -1137,7 +1138,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
         ValueType type = expr.getType();
 
         int classPointer = classGenerator.getClassPointer(ValueType.arrayOf(type));
-        String allocName = WasmMangling.mangleMethod(new MethodReference(Allocator.class, "allocateArray",
+        String allocName = Mangling.mangleMethod(new MethodReference(Allocator.class, "allocateArray",
                 RuntimeClass.class, int.class, Address.class));
         WasmCall call = new WasmCall(allocName);
         call.getArguments().add(new WasmInt32Constant(classPointer));
@@ -1167,7 +1168,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
         }
 
         int classPointer = classGenerator.getClassPointer(ValueType.arrayOf(type));
-        String allocName = WasmMangling.mangleMethod(new MethodReference(Allocator.class, "allocateMultiArray",
+        String allocName = Mangling.mangleMethod(new MethodReference(Allocator.class, "allocateMultiArray",
                 RuntimeClass.class, Address.class, int.class, RuntimeArray.class));
         WasmCall call = new WasmCall(allocName);
         call.getArguments().add(new WasmInt32Constant(classPointer));
@@ -1268,7 +1269,7 @@ class WasmGenerationVisitor implements StatementVisitor, ExprVisitor {
     @Override
     public void visit(InitClassStatement statement) {
         if (classGenerator.hasClinit(statement.getClassName())) {
-            result = new WasmCall(WasmMangling.mangleInitializer(statement.getClassName()));
+            result = new WasmCall(Mangling.mangleInitializer(statement.getClassName()));
             result.setLocation(statement.getLocation());
         } else {
             result = null;

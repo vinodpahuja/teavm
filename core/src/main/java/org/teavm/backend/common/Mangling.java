@@ -1,5 +1,5 @@
 /*
- *  Copyright 2016 Alexey Andreev.
+ *  Copyright 2017 Alexey Andreev.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -13,15 +13,15 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package org.teavm.backend.wasm.generate;
+package org.teavm.backend.common;
 
 import java.util.Arrays;
 import java.util.stream.Collectors;
 import org.teavm.model.MethodReference;
 import org.teavm.model.ValueType;
 
-public final class WasmMangling {
-    private WasmMangling() {
+public final class Mangling {
+    private Mangling() {
     }
 
     public static String mangleIsSupertype(ValueType type) {
@@ -35,7 +35,7 @@ public final class WasmMangling {
         sb.append(mangleType(method.getReturnType()));
         sb.append(name.length() + "_" + name);
         sb.append(Arrays.stream(method.getParameterTypes())
-                .map(WasmMangling::mangleType)
+                .map(Mangling::mangleType)
                 .collect(Collectors.joining()));
         return sb.toString();
     }

@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.teavm.backend.common.Mangling;
 import org.teavm.backend.wasm.binary.BinaryWriter;
 import org.teavm.backend.wasm.binary.DataArray;
 import org.teavm.backend.wasm.binary.DataPrimitives;
@@ -158,7 +159,7 @@ public class WasmClassGenerator {
             binaryData.data.setAddress(CLASS_ITEM_TYPE, itemBinaryData.start);
             binaryData.data.setInt(CLASS_IS_INSTANCE, functionTable.size());
             binaryData.data.setInt(CLASS_CANARY, RuntimeClass.computeCanary(4, 0));
-            functionTable.add(WasmMangling.mangleIsSupertype(type));
+            functionTable.add(Mangling.mangleIsSupertype(type));
             binaryData.start = binaryWriter.append(vtableSize > 0 ? wrapper : binaryData.data);
 
             itemBinaryData.data.setAddress(CLASS_ARRAY_TYPE, binaryData.start);
@@ -170,7 +171,7 @@ public class WasmClassGenerator {
         value.setInt(CLASS_SIZE, size);
         value.setInt(CLASS_FLAGS, RuntimeClass.PRIMITIVE);
         value.setInt(CLASS_IS_INSTANCE, functionTable.size());
-        functionTable.add(WasmMangling.mangleIsSupertype(type));
+        functionTable.add(Mangling.mangleIsSupertype(type));
         return value;
     }
 
@@ -205,7 +206,7 @@ public class WasmClassGenerator {
         header.setInt(CLASS_TAG, tag);
         header.setInt(CLASS_CANARY, RuntimeClass.computeCanary(occupiedSize, tag));
         header.setInt(CLASS_IS_INSTANCE, functionTable.size());
-        functionTable.add(WasmMangling.mangleIsSupertype(ValueType.object(name)));
+        functionTable.add(Mangling.mangleIsSupertype(ValueType.object(name)));
         header.setAddress(CLASS_PARENT, parentPtr);
 
         if (vtable != null) {
@@ -285,7 +286,7 @@ public class WasmClassGenerator {
             } else {
                 methodIndex = functions.computeIfAbsent(vtableEntry.getImplementor(), implementor -> {
                     int result = functionTable.size();
-                    functionTable.add(WasmMangling.mangleMethod(implementor));
+                    functionTable.add(Mangling.mangleMethod(implementor));
                     return result;
                 });
             }

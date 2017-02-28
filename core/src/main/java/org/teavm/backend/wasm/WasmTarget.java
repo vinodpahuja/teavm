@@ -25,14 +25,15 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import org.teavm.ast.decompilation.Decompiler;
+import org.teavm.backend.common.LowLevelDependenciesContributor;
+import org.teavm.backend.common.Mangling;
+import org.teavm.backend.common.patches.ClassPatch;
 import org.teavm.backend.wasm.binary.BinaryWriter;
 import org.teavm.backend.wasm.generate.WasmClassGenerator;
 import org.teavm.backend.wasm.generate.WasmDependencyListener;
 import org.teavm.backend.wasm.generate.WasmGenerationContext;
 import org.teavm.backend.wasm.generate.WasmGenerator;
-import org.teavm.backend.wasm.generate.WasmMangling;
 import org.teavm.backend.wasm.generate.WasmStringPool;
 import org.teavm.backend.wasm.intrinsics.AddressIntrinsic;
 import org.teavm.backend.wasm.intrinsics.AllocatorIntrinsic;
@@ -68,7 +69,6 @@ import org.teavm.backend.wasm.model.expression.WasmReturn;
 import org.teavm.backend.wasm.model.expression.WasmSetLocal;
 import org.teavm.backend.wasm.model.expression.WasmStoreInt32;
 import org.teavm.backend.wasm.optimization.UnusedFunctionElimination;
-import org.teavm.backend.wasm.patches.ClassPatch;
 import org.teavm.backend.wasm.render.WasmBinaryRenderer;
 import org.teavm.backend.wasm.render.WasmBinaryVersion;
 import org.teavm.backend.wasm.render.WasmBinaryWriter;
@@ -76,7 +76,6 @@ import org.teavm.backend.wasm.render.WasmCRenderer;
 import org.teavm.backend.wasm.render.WasmRenderer;
 import org.teavm.backend.wasm.transformation.IndirectCallTraceTransformation;
 import org.teavm.backend.wasm.transformation.MemoryAccessTraceTransformation;
-import org.teavm.dependency.ClassDependency;
 import org.teavm.dependency.DependencyChecker;
 import org.teavm.dependency.DependencyListener;
 import org.teavm.interop.Address;
@@ -84,15 +83,12 @@ import org.teavm.interop.DelegateTo;
 import org.teavm.interop.Import;
 import org.teavm.interop.StaticInit;
 import org.teavm.model.AnnotationHolder;
-import org.teavm.model.BasicBlock;
 import org.teavm.model.CallLocation;
 import org.teavm.model.ClassHolder;
 import org.teavm.model.ClassHolderTransformer;
 import org.teavm.model.ClassReader;
 import org.teavm.model.ElementModifier;
-import org.teavm.model.FieldReader;
 import org.teavm.model.FieldReference;
-import org.teavm.model.Instruction;
 import org.teavm.model.ListableClassHolderSource;
 import org.teavm.model.ListableClassReaderSource;
 import org.teavm.model.MethodDescriptor;
@@ -103,19 +99,11 @@ import org.teavm.model.Program;
 import org.teavm.model.ValueType;
 import org.teavm.model.classes.TagRegistry;
 import org.teavm.model.classes.VirtualTableProvider;
-import org.teavm.model.instructions.CloneArrayInstruction;
-import org.teavm.model.instructions.InvocationType;
-import org.teavm.model.instructions.InvokeInstruction;
 import org.teavm.model.lowlevel.ClassInitializerEliminator;
 import org.teavm.model.lowlevel.ClassInitializerTransformer;
 import org.teavm.model.lowlevel.ShadowStackTransformer;
 import org.teavm.model.transformation.ClassInitializerInsertionTransformer;
-import org.teavm.runtime.Allocator;
-import org.teavm.runtime.ExceptionHandling;
-import org.teavm.runtime.RuntimeArray;
 import org.teavm.runtime.RuntimeClass;
-import org.teavm.runtime.RuntimeJavaObject;
-import org.teavm.runtime.RuntimeObject;
 import org.teavm.vm.BuildTarget;
 import org.teavm.vm.TeaVMEntryPoint;
 import org.teavm.vm.TeaVMTarget;
@@ -231,33 +219,7 @@ public class WasmTarget implements TeaVMTarget {
         dependencyChecker.linkMethod(new MethodReference(WasmRuntime.class, "getCallSiteId", Address.class,
                 int.class), null).use();
 
-        dependencyChecker.linkMethod(new MethodReference(Allocator.class, "allocate",
-                RuntimeClass.class, Address.class), null).use();
-        dependencyChecker.linkMethod(new MethodReference(Allocator.class, "allocateArray",
-                RuntimeClass.class, int.class, Address.class), null).use();
-        dependencyChecker.linkMethod(new MethodReference(Allocator.class, "allocateMultiArray",
-                RuntimeClass.class, Address.class, int.class, RuntimeArray.class), null).use();
-
-        dependencyChecker.linkMethod(new MethodReference(Allocator.class, "<clinit>", void.class), null).use();
-
-        dependencyChecker.linkMethod(new MethodReference(ExceptionHandling.class, "throwException",
-                Throwable.class, void.class), null).use();
-
-        dependencyChecker.linkMethod(new MethodReference(ExceptionHandling.class, "catchException",
-                Throwable.class), null).use();
-
-        dependencyChecker.linkField(new FieldReference("java.lang.Object", "monitor"), null);
-
-        ClassDependency runtimeClassDep = dependencyChecker.linkClass(RuntimeClass.class.getName(), null);
-        ClassDependency runtimeObjectDep = dependencyChecker.linkClass(RuntimeObject.class.getName(), null);
-        ClassDependency runtimeJavaObjectDep = dependencyChecker.linkClass(RuntimeJavaObject.class.getName(), null);
-        ClassDependency runtimeArrayDep = dependencyChecker.linkClass(RuntimeArray.class.getName(), null);
-        for (ClassDependency classDep : Arrays.asList(runtimeClassDep, runtimeObjectDep, runtimeJavaObjectDep,
-                runtimeArrayDep)) {
-            for (FieldReader field : classDep.getClassReader().getFields()) {
-                dependencyChecker.linkField(field.getReference(), null);
-            }
-        }
+        LowLevelDependenciesContributor.contribute(dependencyChecker);
     }
 
     @Override
@@ -274,7 +236,7 @@ public class WasmTarget implements TeaVMTarget {
         WasmModule module = new WasmModule();
         WasmFunction initFunction = new WasmFunction("__start__");
 
-        VirtualTableProvider vtableProvider = createVirtualTableProvider(classes);
+        VirtualTableProvider vtableProvider = VirtualTableProvider.create(classes);
         TagRegistry tagRegistry = new TagRegistry(classes);
         BinaryWriter binaryWriter = new BinaryWriter(256);
         WasmClassGenerator classGenerator = new WasmClassGenerator(
@@ -334,13 +296,13 @@ public class WasmTarget implements TeaVMTarget {
             if (clinit == null) {
                 continue;
             }
-            initFunction.getBody().add(new WasmCall(WasmMangling.mangleInitializer(className)));
+            initFunction.getBody().add(new WasmCall(Mangling.mangleInitializer(className)));
         }
         module.add(initFunction);
         module.setStartFunction(initFunction);
 
         for (TeaVMEntryPoint entryPoint : controller.getEntryPoints().values()) {
-            String mangledName = WasmMangling.mangleMethod(entryPoint.getReference());
+            String mangledName = Mangling.mangleMethod(entryPoint.getReference());
             WasmFunction function = module.getFunctions().get(mangledName);
             if (function != null) {
                 function.setExportName(entryPoint.getPublicName());
@@ -467,7 +429,7 @@ public class WasmTarget implements TeaVMTarget {
     private void generateIsSupertypeFunctions(TagRegistry tagRegistry, WasmModule module,
             WasmClassGenerator classGenerator) {
         for (ValueType type : classGenerator.getRegisteredClasses()) {
-            WasmFunction function = new WasmFunction(WasmMangling.mangleIsSupertype(type));
+            WasmFunction function = new WasmFunction(Mangling.mangleIsSupertype(type));
             function.getParameters().add(WasmType.INT32);
             function.setResult(WasmType.INT32);
             module.add(function);
@@ -559,7 +521,7 @@ public class WasmTarget implements TeaVMTarget {
         itemTest.setType(WasmType.INT32);
         itemTest.getThenBlock().getBody().add(new WasmInt32Constant(0));
 
-        WasmCall delegateToItem = new WasmCall(WasmMangling.mangleIsSupertype(itemType));
+        WasmCall delegateToItem = new WasmCall(Mangling.mangleIsSupertype(itemType));
         delegateToItem.getArguments().add(new WasmGetLocal(subtypeVar));
         itemTest.getElseBlock().getBody().add(delegateToItem);
 
@@ -567,9 +529,9 @@ public class WasmTarget implements TeaVMTarget {
     }
 
     private WasmFunction generateStub(WasmModule module, MethodHolder method, MethodHolder implementor) {
-        WasmFunction function = module.getFunctions().get(WasmMangling.mangleMethod(method.getReference()));
+        WasmFunction function = module.getFunctions().get(Mangling.mangleMethod(method.getReference()));
 
-        WasmCall call = new WasmCall(WasmMangling.mangleMethod(implementor.getReference()));
+        WasmCall call = new WasmCall(Mangling.mangleMethod(implementor.getReference()));
         for (WasmType param : function.getParameters()) {
             WasmLocal local = new WasmLocal(param);
             function.add(local);
@@ -604,7 +566,7 @@ public class WasmTarget implements TeaVMTarget {
                 continue;
             }
 
-            WasmFunction initFunction = new WasmFunction(WasmMangling.mangleInitializer(className));
+            WasmFunction initFunction = new WasmFunction(Mangling.mangleInitializer(className));
             module.add(initFunction);
 
             WasmBlock block = new WasmBlock(false);
@@ -624,7 +586,7 @@ public class WasmTarget implements TeaVMTarget {
                     WasmInt32Subtype.INT32));
 
             if (method != null) {
-                block.getBody().add(new WasmCall(WasmMangling.mangleMethod(method.getReference())));
+                block.getBody().add(new WasmCall(Mangling.mangleMethod(method.getReference())));
             }
 
             if (controller.wasCancelled()) {
@@ -661,32 +623,4 @@ public class WasmTarget implements TeaVMTarget {
         gcIntrinsic.setAvailableBytes(gcMemory);
     }
 
-    private VirtualTableProvider createVirtualTableProvider(ListableClassHolderSource classes) {
-        Set<MethodReference> virtualMethods = new HashSet<>();
-
-        for (String className : classes.getClassNames()) {
-            ClassHolder cls = classes.get(className);
-            for (MethodHolder method : cls.getMethods()) {
-                Program program = method.getProgram();
-                if (program == null) {
-                    continue;
-                }
-                for (int i = 0; i < program.basicBlockCount(); ++i) {
-                    BasicBlock block = program.basicBlockAt(i);
-                    for (Instruction insn : block) {
-                        if (insn instanceof InvokeInstruction) {
-                            InvokeInstruction invoke = (InvokeInstruction) insn;
-                            if (invoke.getType() == InvocationType.VIRTUAL) {
-                                virtualMethods.add(invoke.getMethod());
-                            }
-                        } else if (insn instanceof CloneArrayInstruction) {
-                            virtualMethods.add(new MethodReference(Object.class, "clone", Object.class));
-                        }
-                    }
-                }
-            }
-        }
-
-        return new VirtualTableProvider(classes, virtualMethods);
-    }
 }
