@@ -15,12 +15,28 @@
  */
 package org.teavm.backend.llvm.rendering;
 
+import static org.teavm.backend.common.Mangling.mangleField;
 import static org.teavm.backend.common.Mangling.mangleMethod;
+import static org.teavm.backend.common.RuntimeMembers.ARRAY_SIZE_FIELD;
+import static org.teavm.backend.common.RuntimeMembers.CLASS_CLASS;
+import static org.teavm.backend.common.RuntimeMembers.CLASS_FLAGS_FIELD;
+import static org.teavm.backend.common.RuntimeMembers.OBJECT_CLASS_REFERENCE_FIELD;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classInitializer;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classInstance;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classStruct;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.dataStruct;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.methodType;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderItemType;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
+import org.teavm.backend.common.Mangling;
+import org.teavm.backend.llvm.LayoutProvider;
+import org.teavm.interop.Address;
 import org.teavm.model.BasicBlockReader;
+import org.teavm.model.ClassReader;
+import org.teavm.model.ClassReaderSource;
 import org.teavm.model.ElementModifier;
 import org.teavm.model.FieldReference;
 import org.teavm.model.IncomingReader;
@@ -35,6 +51,8 @@ import org.teavm.model.TextLocation;
 import org.teavm.model.ValueType;
 import org.teavm.model.VariableReader;
 import org.teavm.model.classes.StringPool;
+import org.teavm.model.classes.VirtualTableEntry;
+import org.teavm.model.classes.VirtualTableProvider;
 import org.teavm.model.instructions.ArrayElementType;
 import org.teavm.model.instructions.BinaryBranchingCondition;
 import org.teavm.model.instructions.BinaryOperation;
@@ -46,17 +64,35 @@ import org.teavm.model.instructions.InvocationType;
 import org.teavm.model.instructions.NumericOperandType;
 import org.teavm.model.instructions.SwitchTableEntryReader;
 import org.teavm.model.util.TypeInferer;
+import org.teavm.model.util.VariableType;
+import org.teavm.runtime.Allocator;
+import org.teavm.runtime.RuntimeArray;
+import org.teavm.runtime.RuntimeClass;
 
 public class LLVMMethodRenderer {
+    private ClassReaderSource classSource;
     private StringPool stringPool;
+    private LayoutProvider layoutProvider;
+    private VirtualTableProvider vtableProvider;
     private LLVMBlock rootBlock;
     private TypeInferer typeInferer;
     private LLVMBlock out;
     private int temporaryVariable;
+    private int temporaryBlock;
     private MethodReader method;
+    private String[] basicBlockLabels;
+    private List<Runnable> deferredActions = new ArrayList<>();
 
-    public LLVMMethodRenderer(StringPool stringPool) {
+    public LLVMMethodRenderer(ClassReaderSource classSource, StringPool stringPool, LayoutProvider layoutProvider,
+            VirtualTableProvider vtableProvider) {
+        this.classSource = classSource;
         this.stringPool = stringPool;
+        this.layoutProvider = layoutProvider;
+        this.vtableProvider = vtableProvider;
+    }
+
+    public void setRootBlock(LLVMBlock rootBlock) {
+        this.rootBlock = rootBlock;
     }
 
     public void renderMethod(MethodReader method) {
@@ -72,8 +108,15 @@ public class LLVMMethodRenderer {
 
         renderSignature(method);
         for (int i = 0; i < program.basicBlockCount(); ++i) {
-            renderBlock(program.basicBlockAt(i));
+            BasicBlockReader block = program.basicBlockAt(i);
+            basicBlockLabels[i] = block(block);
+            renderBlock(block);
         }
+
+        for (Runnable deferredAction : deferredActions) {
+            deferredAction.run();
+        }
+        deferredActions.clear();
     }
 
     private void renderSignature(MethodReader method) {
@@ -94,28 +137,37 @@ public class LLVMMethodRenderer {
 
     private void renderBlock(BasicBlockReader block) {
         rootBlock.line(block(block) + ":");
-        out = rootBlock.innerBlock();
         renderPhis(block);
+
+        out = rootBlock.innerBlock();
         block.readAllInstructions(reader);
     }
 
     private void renderPhis(BasicBlockReader block) {
-        for (PhiReader phi : block.readPhis()) {
-            String type = renderType(typeInferer.typeOf(phi.getReceiver().getIndex()));
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("phi " + type);
-            boolean first = true;
-            for (IncomingReader incoming : phi.readIncomings()) {
-                if (!first) {
-                    sb.append(", ");
-                }
-                first = false;
-                sb.append(" [ " + var(incoming.getValue()) + ", " + block(incoming.getSource()) + " ]");
-            }
-
-            assignTo(phi.getReceiver(), sb.toString());
+        if (block.readPhis().isEmpty()) {
+            return;
         }
+
+        LLVMBlock phiBlock = rootBlock.innerBlock();
+        deferredActions.add(() -> {
+            out = phiBlock;
+            for (PhiReader phi : block.readPhis()) {
+                String type = renderType(typeInferer.typeOf(phi.getReceiver().getIndex()));
+
+                StringBuilder sb = new StringBuilder();
+                sb.append("phi " + type);
+                boolean first = true;
+                for (IncomingReader incoming : phi.readIncomings()) {
+                    if (!first) {
+                        sb.append(", ");
+                    }
+                    first = false;
+                    sb.append(" [ " + var(incoming.getValue()) + ", " + block(incoming.getSource()) + " ]");
+                }
+
+                assignTo(phi.getReceiver(), sb.toString());
+            }
+        });
     }
 
     private InstructionReader reader = new InstructionReader() {
@@ -332,43 +384,52 @@ public class LLVMMethodRenderer {
         @Override
         public void jumpIf(BranchingCondition cond, VariableReader operand, BasicBlockReader consequent,
                 BasicBlockReader alternative) {
-            String type = "i32";
-            String second = "0";
-            if (cond == BranchingCondition.NULL || cond == BranchingCondition.NOT_NULL) {
-                type = "i8*";
-                second = "null";
-            }
+            LLVMBlock rememberedOut = out;
+            deferredActions.add(() -> {
+                out = rememberedOut;
+                String type = "i32";
+                String second = "0";
+                if (cond == BranchingCondition.NULL || cond == BranchingCondition.NOT_NULL) {
+                    type = "i8*";
+                    second = "null";
+                }
 
-            String tmp = assignToTmp("icmp " + render(cond) + " " + type + " " + var(operand) + ", " + second);
-            out.line("br i1 " + tmp + ", label " + block(consequent) + ", label "  + block(alternative));
+                String tmp = assignToTmp("icmp " + render(cond) + " " + type + " " + var(operand) + ", " + second);
+                out.line("br i1 " + tmp + ", label " + block(consequent) + ", label " + block(alternative));
+            });
         }
 
         @Override
         public void jumpIf(BinaryBranchingCondition cond, VariableReader first, VariableReader second,
                 BasicBlockReader consequent, BasicBlockReader alternative) {
-            String type = "i32";
-            String op;
-            switch (cond) {
-                case EQUAL:
-                    op = "eq";
-                    break;
-                case NOT_EQUAL:
-                    op = "ne";
-                    break;
-                case REFERENCE_EQUAL:
-                    op = "eq";
-                    type = "i8*";
-                    break;
-                case REFERENCE_NOT_EQUAL:
-                    op = "ne";
-                    type = "i8*";
-                    break;
-                default:
-                    throw new IllegalArgumentException("Unknown condition: " + cond);
-            }
+            LLVMBlock rememberedOut = out;
+            deferredActions.add(() -> {
+                out = rememberedOut;
 
-            String tmp = assignToTmp("icmp " + op + " " + type + " " + var(first) + ", " + var(second));
-            out.line("br i1 " + tmp + ", label " + block(consequent) + ", label " + block(alternative));
+                String type = "i32";
+                String op;
+                switch (cond) {
+                    case EQUAL:
+                        op = "eq";
+                        break;
+                    case NOT_EQUAL:
+                        op = "ne";
+                        break;
+                    case REFERENCE_EQUAL:
+                        op = "eq";
+                        type = "i8*";
+                        break;
+                    case REFERENCE_NOT_EQUAL:
+                        op = "ne";
+                        type = "i8*";
+                        break;
+                    default:
+                        throw new IllegalArgumentException("Unknown condition: " + cond);
+                }
+
+                String tmp = assignToTmp("icmp " + op + " " + type + " " + var(first) + ", " + var(second));
+                out.line("br i1 " + tmp + ", label " + block(consequent) + ", label " + block(alternative));
+            });
         }
 
         @Override
@@ -379,13 +440,17 @@ public class LLVMMethodRenderer {
         @Override
         public void choose(VariableReader condition, List<? extends SwitchTableEntryReader> table,
                 BasicBlockReader defaultTarget) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("switch i32 " + var(condition) + ", label " + block(defaultTarget) + " [");
-            for (SwitchTableEntryReader entry : table) {
-                sb.append(" i32 " + entry.getCondition() + ", label " + block(entry.getTarget()));
-            }
-            sb.append(" ]");
-            out.line(sb.toString());
+            LLVMBlock rememberedOut = out;
+
+            deferredActions.add(() -> {
+                StringBuilder sb = new StringBuilder();
+                sb.append("switch i32 " + var(condition) + ", label " + block(defaultTarget) + " [");
+                for (SwitchTableEntryReader entry : table) {
+                    sb.append(" i32 " + entry.getCondition() + ", label " + block(entry.getTarget()));
+                }
+                sb.append(" ]");
+                rememberedOut.line(sb.toString());
+            });
         }
 
         @Override
@@ -399,39 +464,67 @@ public class LLVMMethodRenderer {
 
         @Override
         public void raise(VariableReader exception) {
-
+            throw new UnsupportedOperationException("Raise instruction must be eliminated before rendering LLVM");
         }
 
         @Override
         public void createArray(VariableReader receiver, ValueType itemType, VariableReader size) {
-
+            String classRef = classInstance(itemType);
+            String allocName = Mangling.mangleMethod(new MethodReference(Allocator.class, "allocateArray",
+                    RuntimeClass.class, int.class, Address.class));
+            assignTo(receiver, "call i8* " + allocName + "(i8* " + classRef + ", i32 " + var(size) + ")");
         }
 
         @Override
         public void createArray(VariableReader receiver, ValueType itemType,
                 List<? extends VariableReader> dimensions) {
-
         }
 
         @Override
         public void create(VariableReader receiver, String type) {
-
+            String classRef = "@class$" + Mangling.mangleType(ValueType.object(type));
+            String allocName = Mangling.mangleMethod(new MethodReference(Allocator.class, "allocate",
+                    RuntimeClass.class, Address.class));
+            assignTo(receiver, "call i8* " + allocName + "(i8* " + classRef + ")");
         }
 
         @Override
         public void getField(VariableReader receiver, VariableReader instance, FieldReference field,
                 ValueType fieldType) {
+            assignTo(receiver, getField(instance != null ? var(instance) : null, field, fieldType));
+        }
 
+        private String getField(String instance, FieldReference field, ValueType fieldType) {
+            String valueTypeRef = renderType(fieldType);
+            if (instance == null) {
+                return "load " + valueTypeRef + ", " + valueTypeRef + "* @" + mangleField(field);
+            } else {
+                String pointer = getReferenceToField(instance, field);
+                return "load " + valueTypeRef + ", " + valueTypeRef + "* " + pointer;
+            }
         }
 
         @Override
         public void putField(VariableReader instance, FieldReference field, VariableReader value, ValueType fieldType) {
+            String valueTypeRef = renderType(fieldType);
+            if (instance == null) {
+                out.line("store " + valueTypeRef + " " + var(value) + ", " + valueTypeRef + "* @" + mangleField(field));
+            } else {
+                String pointer = getReferenceToField(var(instance), field);
+                out.line("store " + valueTypeRef + " " + var(value) + ", " + valueTypeRef + "* " + pointer);
+            }
+        }
 
+        private String getReferenceToField(String instance, FieldReference field) {
+            String typeRef = dataStruct(field.getClassName());
+            String typedInstance = assignToTmp("bitcast i8* " + instance + " to " + typeRef + "*");
+            return assignToTmp("getelementptr " + typeRef + ", " + typeRef + "* "
+                    + typedInstance + ", i32 0, i32 " + layoutProvider.getIndex(field));
         }
 
         @Override
         public void arrayLength(VariableReader receiver, VariableReader array) {
-
+            getField(receiver, array, ARRAY_SIZE_FIELD, ValueType.INTEGER);
         }
 
         @Override
@@ -441,25 +534,112 @@ public class LLVMMethodRenderer {
 
         @Override
         public void unwrapArray(VariableReader receiver, VariableReader array, ArrayElementType elementType) {
-
+            assign(receiver, array);
         }
 
         @Override
         public void getElement(VariableReader receiver, VariableReader array, VariableReader index,
                 ArrayElementType elementType) {
-
+            String type = renderType(typeInferer.typeOf(receiver.getIndex()));
+            VariableType itemType = typeInferer.typeOf(array.getIndex());
+            String itemTypeStr = renderItemType(itemType);
+            String elementRef = getArrayElementReference(array, index, itemTypeStr);
+            if (type.equals(itemTypeStr)) {
+                assignTo(receiver, "load " + type + ", " + type + "* " + elementRef);
+            } else {
+                String tmp = assignToTmp("load " + itemTypeStr + ", " + itemTypeStr + "* " + elementRef);
+                switch (itemType) {
+                    case BYTE_ARRAY:
+                        assignTo(receiver, "sext i8 " + tmp + " to i32");
+                        break;
+                    case SHORT_ARRAY:
+                        assignTo(receiver, "sext i16 " + tmp + " to i32");
+                        break;
+                    case CHAR_ARRAY:
+                        assignTo(receiver, "zext i16 " + tmp + " to i32");
+                        break;
+                    default:
+                        throw new AssertionError("Should not get here");
+                }
+            }
         }
 
         @Override
         public void putElement(VariableReader array, VariableReader index, VariableReader value,
                 ArrayElementType elementType) {
+            String type = renderType(typeInferer.typeOf(value.getIndex()));
+            VariableType itemType = typeInferer.typeOf(array.getIndex());
+            String itemTypeStr = renderItemType(itemType);
+            String elementRef = getArrayElementReference(array, index, itemTypeStr);
+            String valueRef = "%v" + value.getIndex();
+            if (!type.equals(itemTypeStr)) {
+                valueRef = assignToTmp("trunc i32 " + valueRef + " to " + itemTypeStr);
+            }
+            out.line("store " + itemTypeStr + " " + valueRef + ", " + itemTypeStr + "* " + elementRef);
+        }
 
+        private String getArrayElementReference(VariableReader array, VariableReader index, String type) {
+            String arrayStruct = dataStruct(RuntimeArray.class.getName());
+            String objectRef = assignToTmp("bitcast i8* " + var(array) + " to " + arrayStruct + "*");
+            String dataRef = assignToTmp("getelementptr " + arrayStruct + ", " + arrayStruct + "* "
+                    + objectRef + ", i32 1");
+            String typedDataRef = assignToTmp("bitcast " + arrayStruct + "* " + dataRef + " to " + type + "*");
+            String adjustedIndex = assignToTmp("add i32 " + var(index) + ", 1");
+            return assignToTmp("getelementptr " + type + ", " + type + "* " + typedDataRef
+                    + ", i32 %t" + adjustedIndex);
         }
 
         @Override
         public void invoke(VariableReader receiver, VariableReader instance, MethodReference method,
                 List<? extends VariableReader> arguments, InvocationType type) {
+            StringBuilder sb = new StringBuilder();
+            if (receiver != null) {
+                sb.append(var(receiver) + " = ");
+            }
 
+            String function;
+            if (type == InvocationType.SPECIAL) {
+                function = "@" + mangleMethod(method);
+            } else {
+                VirtualTableEntry entry = resolve(method);
+                String className = entry.getVirtualTable().getClassName();
+                String typeRef = classStruct(className);
+                String classRef = getClassRef(instance, typeRef);
+
+                int vtableIndex = entry.getIndex() + 1;
+                String functionRef = assignToTmp("getelementptr inbounds " + typeRef + ", "
+                        + typeRef + "* " + classRef + ", i32 0, i32 " + vtableIndex);
+                String methodType = methodType(method.getDescriptor());
+                function = assignToTmp("load " + methodType + ", " + methodType + "* " + functionRef);
+            }
+
+            sb.append("call " + renderType(method.getReturnType()) + " " + function + "(");
+
+            List<String> argumentStrings = new ArrayList<>();
+            if (instance != null) {
+                argumentStrings.add("i8* " + var(instance));
+            }
+            for (int i = 0; i < arguments.size(); ++i) {
+                argumentStrings.add(renderType(method.parameterType(i)) + " " + var(arguments.get(i)));
+            }
+            sb.append(argumentStrings.stream().collect(Collectors.joining(", ")) + ")");
+
+            out.line(sb.toString());
+        }
+
+        private VirtualTableEntry resolve(MethodReference method) {
+            while (true) {
+                VirtualTableEntry entry = vtableProvider.lookup(method);
+                if (entry != null) {
+                    return entry;
+                }
+                ClassReader cls = classSource.get(method.getClassName());
+                if (cls == null || cls.getParent() == null || cls.getParent().equals(cls.getName())) {
+                    break;
+                }
+                method = new MethodReference(cls.getParent(), method.getDescriptor());
+            }
+            return null;
         }
 
         @Override
@@ -476,7 +656,28 @@ public class LLVMMethodRenderer {
 
         @Override
         public void initClass(String className) {
+            String classRef = assignToTmp("bitcast " + classStruct(className) + "* "
+                    + classInstance(ValueType.object(className)) + " to " + dataStruct(CLASS_CLASS) + "*");
+            String flags = getField(classRef, CLASS_FLAGS_FIELD, ValueType.INTEGER);
+            String initBit = assignToTmp("and i32, " + flags + ", " + RuntimeClass.INITIALIZED);
+            String initialized = assignToTmp("icmp ne i32 " + initBit + ", " + 0);
+            String labelUninitilized = "%L" + temporaryBlock++;
+            String labelInitilized = "%L" + temporaryBlock++;
+            out.line("br i1 " + initialized + " label " + labelInitilized + ", label " + labelUninitilized);
 
+            rootBlock.line(labelUninitilized + ":");
+            out = rootBlock.innerBlock();
+            out.line("call void " + classInitializer(className) + "()");
+            out.line("br label " + labelInitilized);
+
+            rootBlock.line(labelInitilized + ":");
+            out = rootBlock.innerBlock();
+        }
+
+        private String getClassRef(VariableReader instance, String typeRef) {
+            String classTag = assignToTmp(getField(var(instance), OBJECT_CLASS_REFERENCE_FIELD, ValueType.INTEGER));
+            String classRef = assignToTmp("shl i32 " + classTag + ", 3");
+            return assignToTmp("inttoptr i32 " + classRef + " to " + typeRef + "*");
         }
 
         @Override
@@ -514,7 +715,8 @@ public class LLVMMethodRenderer {
     }
 
     private String block(BasicBlockReader block) {
-        return "%b" + block.getIndex();
+        String label = basicBlockLabels[block.getIndex()];
+        return label != null ? label : "%" + block.getIndex();
     }
 
     private static String render(BranchingCondition cond) {

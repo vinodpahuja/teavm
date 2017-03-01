@@ -15,6 +15,7 @@
  */
 package org.teavm.backend.llvm.rendering;
 
+import org.teavm.backend.common.Mangling;
 import org.teavm.model.MethodDescriptor;
 import org.teavm.model.ValueType;
 import org.teavm.model.instructions.NumericOperandType;
@@ -121,5 +122,25 @@ public final class LLVMRenderingHelper {
                 return "double";
         }
         throw new IllegalArgumentException("Unknown operand type: " + type);
+    }
+
+    public static String dataStruct(String className) {
+        return "%data$" + Mangling.mangleString(className);
+    }
+
+    public static String classStruct(String className) {
+        return "%class$" + Mangling.mangleString(className);
+    }
+
+    public static String classInstance(ValueType type) {
+        return "@class$" + Mangling.mangleType(type);
+    }
+
+    public static String classInitializer(String className) {
+        return "@clinit$" + Mangling.mangleString(className);
+    }
+
+    public static String isInstanceFunction(ValueType type) {
+        return "@instanceof$" + Mangling.mangleType(type);
     }
 }

@@ -17,6 +17,7 @@ package org.teavm.backend.common;
 
 import java.util.Arrays;
 import java.util.stream.Collectors;
+import org.teavm.model.FieldReference;
 import org.teavm.model.MethodReference;
 import org.teavm.model.ValueType;
 
@@ -40,11 +41,16 @@ public final class Mangling {
         return sb.toString();
     }
 
+    public static String mangleField(FieldReference field) {
+        String className = field.getClassName().length() + mangleString(field.getClassName());
+        return "field$" + className + "_" + mangleString(field.getFieldName());
+    }
+
     public static String mangleInitializer(String className) {
         return "clinit$" + mangleString(className);
     }
 
-    private static String mangleString(String string) {
+    public static String mangleString(String string) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < string.length(); ++i) {
             char c = string.charAt(i);
