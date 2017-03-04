@@ -36,6 +36,7 @@ import java.util.Set;
 import org.apache.commons.io.IOUtils;
 import org.teavm.backend.javascript.JavaScriptTarget;
 import org.teavm.backend.javascript.rendering.RenderingManager;
+import org.teavm.backend.llvm.LLVMTarget;
 import org.teavm.backend.wasm.WasmTarget;
 import org.teavm.backend.wasm.render.WasmBinaryVersion;
 import org.teavm.cache.DiskCachedClassHolderSource;
@@ -100,6 +101,7 @@ public class TeaVMTool implements BaseTeaVMTool {
     private DebugInformationBuilder debugEmitter;
     private JavaScriptTarget javaScriptTarget;
     private WasmTarget webAssemblyTarget;
+    private LLVMTarget llvmTarget;
     private WasmBinaryVersion wasmVersion = WasmBinaryVersion.V_0xD;
 
     public File getTargetDirectory() {
@@ -319,6 +321,8 @@ public class TeaVMTool implements BaseTeaVMTool {
                 return prepareJavaScriptTarget();
             case WEBASSEMBLY:
                 return prepareWebAssemblyTarget();
+            case LLVM:
+                return prepareLLVMTarget();
         }
         throw new IllegalStateException("Unknown target type: " + targetType);
     }
@@ -345,6 +349,11 @@ public class TeaVMTool implements BaseTeaVMTool {
         webAssemblyTarget.setWastEmitted(debugInformationGenerated);
         webAssemblyTarget.setVersion(wasmVersion);
         return webAssemblyTarget;
+    }
+
+    private LLVMTarget prepareLLVMTarget() {
+        llvmTarget = new LLVMTarget();
+        return llvmTarget;
     }
 
     public void generate() throws TeaVMToolException {
@@ -473,6 +482,8 @@ public class TeaVMTool implements BaseTeaVMTool {
                     return "classes.js";
                 case WEBASSEMBLY:
                     return "classes.wasm";
+                case LLVM:
+                    return "classes.ll";
                 default:
                     return "classes";
             }

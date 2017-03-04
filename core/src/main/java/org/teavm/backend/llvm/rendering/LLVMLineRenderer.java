@@ -20,7 +20,7 @@ import java.io.Writer;
 
 public class LLVMLineRenderer implements LLVMLineVisitor {
     private Writer writer;
-    private int indentLevel;
+    private int indentLevel = -1;
 
     public LLVMLineRenderer(Writer writer) {
         this.writer = writer;

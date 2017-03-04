@@ -15,25 +15,33 @@
  */
 package org.teavm.backend.llvm.rendering;
 
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classStruct;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.dataStruct;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.methodType;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderType;
 import java.io.IOException;
+import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.teavm.backend.llvm.LayoutProvider;
+import org.teavm.interop.Address;
+import org.teavm.interop.Structure;
 import org.teavm.model.ClassReader;
 import org.teavm.model.ClassReaderSource;
 import org.teavm.model.ElementModifier;
 import org.teavm.model.FieldReader;
 import org.teavm.model.MethodReader;
-import org.teavm.model.MethodReference;
 import org.teavm.model.ValueType;
 import org.teavm.model.classes.StringPool;
 import org.teavm.model.classes.TagRegistry;
 import org.teavm.model.classes.VirtualTable;
 import org.teavm.model.classes.VirtualTableEntry;
 import org.teavm.model.classes.VirtualTableProvider;
+import org.teavm.runtime.RuntimeClass;
+import org.teavm.runtime.RuntimeObject;
 
 public class LLVMRenderer {
     private ClassReaderSource classSource;
@@ -42,6 +50,7 @@ public class LLVMRenderer {
     private TagRegistry tagRegistry;
     private StringPool stringPool = new StringPool();
     private LLVMBlock rootBlock;
+    private Map<String, Boolean> isStructureClasses = new HashMap<>();
 
     public LLVMRenderer(ClassReaderSource classSource, LayoutProvider layoutProvider,
             VirtualTableProvider vtableProvider, TagRegistry tagRegistry) {
@@ -55,27 +64,35 @@ public class LLVMRenderer {
         return rootBlock;
     }
 
-    public void renderClasses(Collection<String> classNames) throws IOException {
+    public void renderClasses(Collection<String> classNames, Writer writer) throws IOException {
+        rootBlock = new LLVMBlock();
+
         List<String> stackRoots = new ArrayList<>();
         for (String className : classNames) {
+            if (className.equals(Structure.class.getName()) || className.equals(Address.class.getName())) {
+                continue;
+            }
+
             rootBlock.comment("class " + className);
 
-            LLVMStructure structure = new LLVMStructure("vtable." + className);
             ClassReader cls = classSource.get(className);
             boolean isTop = cls == null || cls.getParent() == null || cls.getParent().equals(cls.getName());
-            if (!isTop) {
-                structure.addField("%vtable." + cls.getParent(), "<parent>");
-            } else {
-                structure.addField("%vtable");
-            }
-            emitVirtualTableEntries(vtableProvider.lookup(className), false, structure);
-            if (structure.getFields().isEmpty() && isTop) {
-                structure.addField("%itable");
-            }
-            rootBlock.add(structure);
 
-            structure = new LLVMStructure("class." + className);
-            structure.addField(!isTop ? "%class." + cls.getParent() : "%teavm.Object");
+            if (!isStructure(className)) {
+                LLVMStructure structure = new LLVMStructure(classStruct(className));
+                if (!isTop) {
+                    structure.addField(classStruct(cls.getParent()), "<parent>");
+                } else {
+                    structure.addField(dataStruct(RuntimeClass.class.getName()));
+                }
+                emitVirtualTableEntries(vtableProvider.lookup(className), structure);
+                rootBlock.add(structure);
+            }
+
+            LLVMStructure structure = new LLVMStructure(dataStruct(className));
+            if (cls.getParent() == null || !cls.getParent().equals(Structure.class.getName())) {
+                structure.addField(!isTop ? dataStruct(cls.getParent()) : dataStruct(RuntimeObject.class.getName()));
+            }
 
             List<String> gcFields = new ArrayList<>();
             for (FieldReader field : cls.getFields()) {
@@ -89,15 +106,18 @@ public class LLVMRenderer {
                 }
             }
             rootBlock.add(structure);
+            rootBlock.line("");
         }
 
         for (String className : classNames) {
             ClassReader cls = classSource.get(className);
 
             for (MethodReader method : cls.getMethods()) {
-                /*LLVMMethodRenderer methodRenderer = new LLVMMethodRenderer(appendable, classSource, stringPool,
-                        layoutProvider, vtableProvider, tagRegistry, cs -> addCallSite(cs));
-                methodRenderer.renderMethod(method);*/
+                LLVMMethodRenderer methodRenderer = new LLVMMethodRenderer(classSource, stringPool,
+                        layoutProvider, vtableProvider);
+                methodRenderer.setRootBlock(rootBlock);
+                methodRenderer.renderMethod(method);
+                rootBlock.line("");
             }
 
             //renderClassInitializer(cls);
@@ -152,22 +172,37 @@ public class LLVMRenderer {
 
         renderCallSites();
         */
+
+        rootBlock.acceptVisitor(new LLVMLineRenderer(writer));
     }
 
-    private void emitVirtualTableEntries(VirtualTable vtable, boolean fqn, LLVMStructure structure) {
+    private void emitVirtualTableEntries(VirtualTable vtable, LLVMStructure structure) {
         if (vtable == null) {
             return;
         }
 
         for (VirtualTableEntry entry : vtable.getEntries().values()) {
-            MethodReference method = entry.getImplementor();
-
-            structure.addField(methodType(method.getDescriptor()),
-                    fqn ? method.toString() : method.getDescriptor().toString());
+            structure.addField(methodType(entry.getMethod()), entry.getMethod().toString());
         }
     }
 
     private boolean isReference(ValueType type) {
         return type instanceof ValueType.Object || type instanceof ValueType.Array;
+    }
+
+    private boolean isStructure(String className) {
+        return isStructureClasses.computeIfAbsent(className, name -> {
+            if (name.equals(Structure.class.getName())) {
+                return true;
+            }
+            ClassReader cls = classSource.get(name);
+            if (cls == null) {
+                return false;
+            }
+            if (cls.getParent() != null) {
+                return isStructure(cls.getParent());
+            }
+            return false;
+        });
     }
 }

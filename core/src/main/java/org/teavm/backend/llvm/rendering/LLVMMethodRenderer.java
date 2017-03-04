@@ -25,6 +25,7 @@ import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classInitiali
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classInstance;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classStruct;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.dataStruct;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.isInstanceFunction;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.methodType;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderItemType;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderType;
@@ -107,6 +108,7 @@ public class LLVMMethodRenderer {
         typeInferer.inferTypes(program, method.getReference());
 
         renderSignature(method);
+        basicBlockLabels = new String[program.basicBlockCount()];
         for (int i = 0; i < program.basicBlockCount(); ++i) {
             BasicBlockReader block = program.basicBlockAt(i);
             basicBlockLabels[i] = block(block);
@@ -131,7 +133,7 @@ public class LLVMMethodRenderer {
             String type = renderType(method.parameterType(i));
             parameters.add(type + " %v" + (i + 1));
         }
-        sb.append(parameters.stream().collect(Collectors.joining(", "))).append(") {\n");
+        sb.append(parameters.stream().collect(Collectors.joining(", "))).append(") {");
         rootBlock.line(sb.toString());
     }
 
@@ -181,12 +183,12 @@ public class LLVMMethodRenderer {
 
         @Override
         public void classConstant(VariableReader receiver, ValueType cst) {
-
+            assignTo(receiver, "bitcast i8* " + classInstance(cst) + " to i8*");
         }
 
         @Override
         public void nullConstant(VariableReader receiver) {
-            assignTo(receiver, "bitcast i8* null to i8 *");
+            assignTo(receiver, "bitcast i8* null to i8*");
         }
 
         @Override
@@ -602,15 +604,19 @@ public class LLVMMethodRenderer {
                 function = "@" + mangleMethod(method);
             } else {
                 VirtualTableEntry entry = resolve(method);
-                String className = entry.getVirtualTable().getClassName();
-                String typeRef = classStruct(className);
-                String classRef = getClassRef(instance, typeRef);
+                if (entry != null) {
+                    String className = entry.getVirtualTable().getClassName();
+                    String typeRef = classStruct(className);
+                    String classRef = getClassRef(instance, typeRef);
 
-                int vtableIndex = entry.getIndex() + 1;
-                String functionRef = assignToTmp("getelementptr inbounds " + typeRef + ", "
-                        + typeRef + "* " + classRef + ", i32 0, i32 " + vtableIndex);
-                String methodType = methodType(method.getDescriptor());
-                function = assignToTmp("load " + methodType + ", " + methodType + "* " + functionRef);
+                    int vtableIndex = entry.getIndex() + 1;
+                    String functionRef = assignToTmp("getelementptr inbounds " + typeRef + ", "
+                            + typeRef + "* " + classRef + ", i32 0, i32 " + vtableIndex);
+                    String methodType = methodType(method.getDescriptor());
+                    function = assignToTmp("load " + methodType + ", " + methodType + "* " + functionRef);
+                } else {
+                    function = "";
+                }
             }
 
             sb.append("call " + renderType(method.getReturnType()) + " " + function + "(");
@@ -651,7 +657,7 @@ public class LLVMMethodRenderer {
 
         @Override
         public void isInstance(VariableReader receiver, VariableReader value, ValueType type) {
-
+            assignTo(receiver, "call i32 " + isInstanceFunction(type) + "(i8* " + var(value) + ")");
         }
 
         @Override
@@ -716,7 +722,7 @@ public class LLVMMethodRenderer {
 
     private String block(BasicBlockReader block) {
         String label = basicBlockLabels[block.getIndex()];
-        return label != null ? label : "%" + block.getIndex();
+        return label != null ? label : "%b" + block.getIndex();
     }
 
     private static String render(BranchingCondition cond) {

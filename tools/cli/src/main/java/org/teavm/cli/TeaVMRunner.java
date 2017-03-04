@@ -144,6 +144,9 @@ public final class TeaVMRunner {
                 case "wasm":
                     tool.setTargetType(TeaVMTargetType.WEBASSEMBLY);
                     break;
+                case "llvm":
+                    tool.setTargetType(TeaVMTargetType.LLVM);
+                    break;
             }
         }
         if (commandLine.hasOption("d")) {

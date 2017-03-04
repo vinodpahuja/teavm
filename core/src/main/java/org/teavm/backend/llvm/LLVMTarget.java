@@ -16,11 +16,14 @@
 package org.teavm.backend.llvm;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import org.teavm.backend.common.LowLevelDependenciesContributor;
 import org.teavm.backend.common.patches.ClassPatch;
+import org.teavm.backend.llvm.rendering.LLVMRenderer;
 import org.teavm.dependency.DependencyChecker;
 import org.teavm.dependency.DependencyListener;
 import org.teavm.model.ClassHolderTransformer;
@@ -94,5 +97,15 @@ public class LLVMTarget implements TeaVMTarget {
     public void emit(ListableClassHolderSource classes, BuildTarget buildTarget, String outputName) throws IOException {
         VirtualTableProvider vtableProvider = VirtualTableProvider.create(classes);
         TagRegistry tagRegistry = new TagRegistry(classes);
+        LayoutRegistry layoutProvider = new LayoutRegistry(classes);
+        for (String className : classes.getClassNames()) {
+            layoutProvider.addClass(className);
+        }
+
+        LLVMRenderer renderer = new LLVMRenderer(classes, layoutProvider, vtableProvider, tagRegistry);
+        try (OutputStream output = buildTarget.createResource(outputName);
+                OutputStreamWriter writer = new OutputStreamWriter(output, "UTF-8")) {
+            renderer.renderClasses(classes.getClassNames(), writer);
+        }
     }
 }

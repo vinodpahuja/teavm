@@ -49,7 +49,7 @@ public class LLVMBlock extends LLVMLine {
     }
 
     public LLVMBlock add(LLVMStructure structure) {
-        line("%" + structure.getName() + " = type {");
+        line(structure.getName() + " = type {");
 
         LLVMBlock innerBlock = innerBlock();
         for (int i = 0; i < structure.getFields().size() - 1; ++i) {
