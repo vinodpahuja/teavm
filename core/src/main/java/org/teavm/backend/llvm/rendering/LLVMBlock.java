@@ -73,4 +73,38 @@ public class LLVMBlock extends LLVMLine {
 
         return this;
     }
+
+    public LLVMBlock add(String prefix, LLVMConstant constant, String suffix) {
+        AddConstantVisitor visitor = new AddConstantVisitor();
+        visitor.sb.append(prefix);
+        constant.acceptVisitor(visitor);
+        visitor.sb.append(suffix);
+        line(visitor.sb.toString());
+
+        return this;
+    }
+
+    private class AddConstantVisitor implements LLVMConstantVisitor {
+        StringBuilder sb = new StringBuilder();
+
+        @Override
+        public void visit(LLVMSimpleConstant constant) {
+            sb.append(constant.getType() + " " + constant.getValue());
+        }
+
+        @Override
+        public void visit(LLVMStructureConstant constant) {
+            sb.append(constant.getType() + " {");
+            line(sb.toString());
+
+            LLVMBlock entriesBlock = innerBlock();
+            for (int i = 0; i < constant.getFields().size(); ++i) {
+                String suffix = i < constant.getFields().size() - 1 ? "," : "";
+                entriesBlock.add("", constant.getFields().get(i), suffix);
+            }
+
+            sb.setLength(0);
+            sb.append("}");
+        }
+    }
 }

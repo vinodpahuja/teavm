@@ -30,7 +30,9 @@ import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.methodType;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderItemType;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.renderType;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.teavm.backend.common.Mangling;
 import org.teavm.backend.llvm.LayoutProvider;
@@ -83,6 +85,7 @@ public class LLVMMethodRenderer {
     private MethodReader method;
     private String[] basicBlockLabels;
     private List<Runnable> deferredActions = new ArrayList<>();
+    private Set<ValueType> referencedTypes = new HashSet<>();
 
     public LLVMMethodRenderer(ClassReaderSource classSource, StringPool stringPool, LayoutProvider layoutProvider,
             VirtualTableProvider vtableProvider) {
@@ -90,6 +93,10 @@ public class LLVMMethodRenderer {
         this.stringPool = stringPool;
         this.layoutProvider = layoutProvider;
         this.vtableProvider = vtableProvider;
+    }
+
+    public Set<ValueType> getReferencedTypes() {
+        return referencedTypes;
     }
 
     public void setRootBlock(LLVMBlock rootBlock) {
@@ -183,6 +190,7 @@ public class LLVMMethodRenderer {
 
         @Override
         public void classConstant(VariableReader receiver, ValueType cst) {
+            referencedTypes.add(cst);
             assignTo(receiver, "bitcast i8* " + classInstance(cst) + " to i8*");
         }
 
@@ -471,6 +479,7 @@ public class LLVMMethodRenderer {
 
         @Override
         public void createArray(VariableReader receiver, ValueType itemType, VariableReader size) {
+            referencedTypes.add(itemType);
             String classRef = classInstance(itemType);
             String allocName = Mangling.mangleMethod(new MethodReference(Allocator.class, "allocateArray",
                     RuntimeClass.class, int.class, Address.class));
@@ -662,6 +671,7 @@ public class LLVMMethodRenderer {
 
         @Override
         public void initClass(String className) {
+            referencedTypes.add(ValueType.object(className));
             String classRef = assignToTmp("bitcast " + classStruct(className) + "* "
                     + classInstance(ValueType.object(className)) + " to " + dataStruct(CLASS_CLASS) + "*");
             String flags = getField(classRef, CLASS_FLAGS_FIELD, ValueType.INTEGER);

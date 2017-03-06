@@ -15,6 +15,8 @@
  */
 package org.teavm.backend.llvm.rendering;
 
+import static org.teavm.backend.common.RuntimeMembers.CLASS_CLASS;
+import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classInstance;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.classStruct;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.dataStruct;
 import static org.teavm.backend.llvm.rendering.LLVMRenderingHelper.methodType;
@@ -24,8 +26,11 @@ import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.teavm.backend.common.Mangling;
 import org.teavm.backend.llvm.LayoutProvider;
 import org.teavm.interop.Address;
 import org.teavm.interop.Structure;
@@ -41,6 +46,7 @@ import org.teavm.model.classes.VirtualTable;
 import org.teavm.model.classes.VirtualTableEntry;
 import org.teavm.model.classes.VirtualTableProvider;
 import org.teavm.runtime.RuntimeClass;
+import org.teavm.runtime.RuntimeJavaObject;
 import org.teavm.runtime.RuntimeObject;
 
 public class LLVMRenderer {
@@ -51,6 +57,7 @@ public class LLVMRenderer {
     private StringPool stringPool = new StringPool();
     private LLVMBlock rootBlock;
     private Map<String, Boolean> isStructureClasses = new HashMap<>();
+    private Set<ValueType> referencedClasses = new HashSet<>();
 
     public LLVMRenderer(ClassReaderSource classSource, LayoutProvider layoutProvider,
             VirtualTableProvider vtableProvider, TagRegistry tagRegistry) {
@@ -98,8 +105,8 @@ public class LLVMRenderer {
             for (FieldReader field : cls.getFields()) {
                 if (!field.hasModifier(ElementModifier.STATIC)) {
                     if (isReference(field.getType())) {
-                        gcFields.add("i32 ptrtoint (i8** getelementptr (%class." + className + ", "
-                                + "%class." + className + "* null, i32 0, i32 " + structure.getFields().size() + ") "
+                        gcFields.add("i32 ptrtoint (i8** getelementptr (" + classStruct(className) + ", "
+                                + classStruct(className) + "* null, i32 0, i32 " + structure.getFields().size() + ") "
                                 + "to i32)");
                     }
                     structure.addField(renderType(field.getType()), field.getName());
@@ -118,31 +125,15 @@ public class LLVMRenderer {
                 methodRenderer.setRootBlock(rootBlock);
                 methodRenderer.renderMethod(method);
                 rootBlock.line("");
+                referencedClasses.addAll(methodRenderer.getReferencedTypes());
             }
 
             //renderClassInitializer(cls);
         }
 
-        /*for (String className : classNames) {
-            ClassReader cls = classSource.get(className);
-
-            VirtualTable vtable = vtableProvider.lookup(cls.getName());
-            appendable.append("@vtable." + className + " = private global ");
-            renderVirtualTableValues(cls, vtable, 0);
-            appendable.append(", align 8\n");
-
-            for (FieldReader field : cls.getFields()) {
-                if (field.hasModifier(ElementModifier.STATIC)) {
-                    String fieldRef = "@" + mangleField(field.getReference());
-                    Object initialValue = field.getInitialValue();
-                    String initialValueStr = initialValue != null ? initialValue.toString()
-                            : defaultValue(field.getType());
-                    appendable.append(fieldRef + " = private global " + renderType(field.getType()) + " "
-                            + initialValueStr + "\n");
-                    stackRoots.add(fieldRef);
-                }
-            }
-        }*/
+        for (ValueType valueType : referencedClasses) {
+            renderClassInstance(valueType);
+        }
 
         /*for (ObjectLayout layout : layouts) {
             String className = layout.className;
@@ -176,6 +167,121 @@ public class LLVMRenderer {
         rootBlock.acceptVisitor(new LLVMLineRenderer(writer));
     }
 
+    private void renderClassInstance(ValueType valueType) {
+        String size = "0";
+        String parent = "null";
+        int flags = 0;
+        int tag = 0;
+        String itemRef = "null";
+        if (valueType instanceof ValueType.Primitive) {
+            switch (((ValueType.Primitive) valueType).getKind()) {
+                case BOOLEAN:
+                case BYTE:
+                case SHORT:
+                case CHARACTER:
+                case INTEGER:
+                case FLOAT:
+                    size = "4";
+                    break;
+                case LONG:
+                case DOUBLE:
+                    size = "8";
+                    break;
+            }
+            flags |= RuntimeClass.PRIMITIVE;
+        } else if (valueType instanceof ValueType.Object) {
+            String className = ((ValueType.Object) valueType).getClassName();
+            size = dataStruct(className);
+            size = "ptrtoint (" + size + "* getelementptr (" + size + "* null, i32 1) to i32)";
+            size = "sub (i32 " + size + ", 1)";
+            size = "shr (i32 " + size + ", 2)";
+            size = "add (i32 " + size + ", 1)";
+            size = "shl (i32 " + size + ", 2)";
+            List<TagRegistry.Range> ranges = tagRegistry.getRanges(className);
+            tag = ranges.stream().mapToInt(range -> range.lower).min().orElse(0);
+            ClassReader cls = classSource.get(className);
+            if (cls != null && cls.getParent() != null) {
+                parent = classInstance(ValueType.object(cls.getParent()));
+            }
+            if (isStructure(className)) {
+                return;
+            }
+        } else if (valueType instanceof ValueType.Array) {
+            size = "4";
+            parent = classInstance(ValueType.object(Object.class.getName()));
+            ValueType itemType = ((ValueType.Array) valueType).getItemType();
+            itemRef = classInstance(itemType);
+            if (itemType instanceof ValueType.Object) {
+                itemRef = "bitcast (" + classStruct(((ValueType.Object) itemType).getClassName()) + "* " + itemRef
+                        + " to " + dataStruct(RuntimeClass.class.getName()) + "*)";
+            }
+        }
+
+        ValueType arrayType = ValueType.arrayOf(valueType);
+        String arrayRef = "null";
+        if (referencedClasses.contains(arrayType)) {
+            arrayRef = classInstance(arrayType);
+        }
+
+        LLVMStructureConstant runtimeObject = new LLVMStructureConstant();
+        runtimeObject.setType(dataStruct(RuntimeObject.class.getName()));
+        runtimeObject.addSimpleField("i32", "0");
+
+        LLVMStructureConstant runtimeJavaObject = new LLVMStructureConstant();
+        runtimeJavaObject.setType(dataStruct(RuntimeJavaObject.class.getName()));
+        runtimeJavaObject.getFields().add(runtimeObject);
+        runtimeJavaObject.addSimpleField(dataStruct(RuntimeObject.class.getName()) + "*", "null");
+
+        LLVMStructureConstant runtimeClass = new LLVMStructureConstant();
+        runtimeClass.setType(dataStruct(RuntimeClass.class.getName()));
+        runtimeClass.getFields().add(runtimeJavaObject);
+        runtimeClass.addSimpleField("i32", size);
+        runtimeClass.addSimpleField("i32", String.valueOf(flags));
+        runtimeClass.addSimpleField("i32", String.valueOf(tag));
+        runtimeClass.addSimpleField("i32", "0");
+        runtimeClass.addSimpleField(dataStruct(RuntimeClass.class.getName()) + "*", itemRef);
+        runtimeClass.addSimpleField(dataStruct(RuntimeClass.class.getName()) + "*", arrayRef);
+        runtimeClass.addSimpleField(dataStruct(RuntimeClass.class.getName()) + "*", parent);
+        runtimeClass.addSimpleField("i32 (" + dataStruct(RuntimeClass.class.getName()) + "*)*", "null");
+        runtimeClass.addSimpleField("i8*", "null");
+
+        LLVMConstant constant = runtimeClass;
+        if (valueType instanceof ValueType.Object) {
+            String className = ((ValueType.Object) valueType).getClassName();
+            VirtualTable vtable = vtableProvider.lookup(className);
+            constant = createVirtualTable(constant, vtable);
+        }
+
+        rootBlock.add(classInstance(valueType) + " = private global ", constant, ";");
+    }
+
+    private LLVMConstant createVirtualTable(LLVMConstant innermostConstant, VirtualTable vtable) {
+        LLVMStructureConstant constant = new LLVMStructureConstant();
+        constant.setType(classStruct(vtable.getClassName()));
+        ClassReader cls = classSource.get(vtable.getClassName());
+
+        LLVMConstant parentConstant;
+        if (cls.getParent() != null) {
+            parentConstant = createVirtualTable(innermostConstant, vtableProvider.lookup(cls.getParent()));
+        } else {
+            parentConstant = innermostConstant;
+        }
+        constant.getFields().add(parentConstant);
+
+        List<VirtualTableEntry> entries = new ArrayList<>(vtable.getEntries().values());
+        for (int i = 0; i < entries.size(); ++i) {
+            VirtualTableEntry entry = entries.get(i);
+            LLVMSimpleConstant entryConstant = new LLVMSimpleConstant();
+            entryConstant.setType(methodType(entry.getMethod()));
+            entryConstant.setValue(entry.getImplementor() != null
+                    ? "@" + Mangling.mangleMethod(entry.getImplementor())
+                    : "null");
+            constant.getFields().add(entryConstant);
+        }
+
+        return constant;
+    }
+
     private void emitVirtualTableEntries(VirtualTable vtable, LLVMStructure structure) {
         if (vtable == null) {
             return;
@@ -184,6 +290,31 @@ public class LLVMRenderer {
         for (VirtualTableEntry entry : vtable.getEntries().values()) {
             structure.addField(methodType(entry.getMethod()), entry.getMethod().toString());
         }
+    }
+
+    private void emitIsSupertype(ValueType valueType) {
+        if (valueType instanceof ValueType.Primitive) {
+            return;
+        }
+        rootBlock.line("define i32 @" + Mangling.mangleIsSupertype(valueType)
+                + "(" + dataStruct(CLASS_CLASS) + "* subtype) {");
+        LLVMBlock block = rootBlock.innerBlock();
+        if (valueType instanceof ValueType.Object) {
+            emitIsClassSupertype(((ValueType.Object) valueType).getClassName(), block);
+        }
+
+        rootBlock.line("}");
+    }
+
+    private void emitIsClassSupertype(String className, LLVMBlock block) {
+        List<TagRegistry.Range> ranges = tagRegistry.getRanges(className);
+        if (ranges.isEmpty()) {
+            block.line("ret i32 0");
+            return;
+        }
+
+        block.line("%subtypeRef = getelementptr " + dataStruct(CLASS_CLASS) + ", "
+                + dataStruct(CLASS_CLASS) + "*, i32 0, i32 3");
     }
 
     private boolean isReference(ValueType type) {
