@@ -15,78 +15,72 @@
  */
 package org.teavm.debugging.information;
 
-import org.teavm.common.RecordArray;
-
 public class SourceLocationIterator {
     private DebugInformation debugInformation;
-    private int lineIndex;
-    private int fileIndex;
-    private GeneratedLocation location;
-    private int fileId = -1;
-    private int line = -1;
+    private LayerIterator layerIterator;
+    private LayerSourceLocationIterator[] layerSourceIterators;
     private boolean endReached;
+    private int currentLayer;
+    private GeneratedLocation location;
+    private int fileId;
+    private int line;
 
-    SourceLocationIterator(DebugInformation debugInformation) {
+    public SourceLocationIterator(DebugInformation debugInformation) {
         this.debugInformation = debugInformation;
-        if (!isEndReached()) {
-            read();
+        layerIterator = new LayerIterator(debugInformation);
+        layerSourceIterators = new LayerSourceLocationIterator[debugInformation.layerCount()];
+        for (int i = 0; i < layerSourceIterators.length; ++i) {
+            layerSourceIterators[i] = new LayerSourceLocationIterator(debugInformation, debugInformation.layers[i]);
         }
+
+        if (!layerIterator.isEndReached()) {
+            location = layerIterator.getLocation();
+            currentLayer = layerIterator.getLayer();
+            layerIterator.next();
+        } else {
+            currentLayer = 0;
+        }
+        LayerSourceLocationIterator currentIterator = layerSourceIterators[currentLayer];
+        fileId = currentIterator.getFileNameId();
+        line = currentIterator.getLine();
+        currentIterator.next();
+    }
+
+    public GeneratedLocation getLocation() {
+        return location;
     }
 
     public boolean isEndReached() {
         return endReached;
     }
 
-    private void read() {
-        if (fileIndex < debugInformation.fileMapping.size() && lineIndex < debugInformation.lineMapping.size()) {
-            RecordArray.Record fileRecord = debugInformation.fileMapping.get(fileIndex);
-            RecordArray.Record lineRecord = debugInformation.lineMapping.get(lineIndex);
-            GeneratedLocation fileLoc = DebugInformation.key(fileRecord);
-            GeneratedLocation lineLoc = DebugInformation.key(lineRecord);
-            int cmp = fileLoc.compareTo(lineLoc);
-            if (cmp < 0) {
-                nextFileRecord();
-            } else if (cmp > 0) {
-                nextLineRecord();
-            } else {
-                nextFileRecord();
-                nextLineRecord();
-            }
-        } else if (fileIndex < debugInformation.fileMapping.size()) {
-            nextFileRecord();
-        } else if (lineIndex < debugInformation.lineMapping.size()) {
-            nextLineRecord();
-        } else if (endReached) {
-            throw new IllegalStateException("End already reached");
-        } else {
-            endReached = true;
-        }
-    }
-
-    private void nextFileRecord() {
-        RecordArray.Record record = debugInformation.fileMapping.get(fileIndex++);
-        location = DebugInformation.key(record);
-        fileId = record.get(2);
-    }
-
-    private void nextLineRecord() {
-        RecordArray.Record record = debugInformation.lineMapping.get(lineIndex++);
-        location = DebugInformation.key(record);
-        line = record.get(2);
-    }
-
     public void next() {
-        if (isEndReached()) {
-            throw new IllegalStateException("End already reached");
+        if (endReached) {
+            throw new IllegalStateException();
         }
-        read();
-    }
 
-    public GeneratedLocation getLocation() {
-        if (isEndReached()) {
-            throw new IllegalStateException("End already reached");
+        LayerSourceLocationIterator currentIterator = layerSourceIterators[currentLayer];
+
+        if (!currentIterator.isEndReached() && !layerIterator.isEndReached()
+                && currentIterator.getLocation().compareTo(layerIterator.getLocation()) >= 0) {
+            currentLayer = layerIterator.getLayer();
+            location = layerIterator.getLocation();
+            layerIterator.next();
+
+            currentIterator = layerSourceIterators[currentLayer];
+            do {
+                fileId = currentIterator.getFileNameId();
+                line = currentIterator.getLine();
+                currentIterator.next();
+            } while (!currentIterator.isEndReached() && currentIterator.getLocation().compareTo(location) <= 0);
+        } else if (currentIterator.isEndReached()) {
+            endReached = true;
+        } else {
+            location = currentIterator.getLocation();
+            fileId = currentIterator.getFileNameId();
+            line = currentIterator.getLine();
+            currentIterator.next();
         }
-        return location;
     }
 
     public int getFileNameId() {

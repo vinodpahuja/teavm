@@ -56,13 +56,18 @@ class SourceMapsWriter {
         lastColumn = 0;
         lastSourceFile = 0;
         lastSourceLine = 0;
+        System.out.println();
+        System.out.println("### SOURCE MAPS ###");
         for (SourceLocationIterator iter = debugInfo.iterateOverSourceLocations(); !iter.isEndReached(); iter.next()) {
-            writeSegment(iter.getLocation(), iter.getFileNameId(), iter.getLine() - 1);
+            writeSegment(iter.getLocation(), iter.getFileNameId(), iter.getLine() - 1, debugInfo);
         }
         output.write("\"}");
     }
 
-    private void writeSegment(GeneratedLocation loc, int sourceFile, int sourceLine) throws IOException {
+    private void writeSegment(GeneratedLocation loc, int sourceFile, int sourceLine, DebugInformation debugInfo)
+            throws IOException {
+        System.out.println(loc + " - " + (sourceFile >= 0 ? debugInfo.fileNames[sourceFile] : "no file")
+                + ":" + (sourceLine + 1));
         while (loc.getLine() > lastLine) {
             output.write(';');
             ++lastLine;
