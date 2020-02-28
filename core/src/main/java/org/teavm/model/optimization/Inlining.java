@@ -116,7 +116,6 @@ public class Inlining {
                 }
             }
         }
-        Collections.reverse(order);
         return order;
     }
 

@@ -661,9 +661,33 @@ public class TeaVM implements TeaVMHost, ServiceRepository {
             if (newProgress > compileProgressValue) {
                 compileProgressValue = newProgress;
                 reportCompileProgress(++compileProgressValue);
-                if (wasCancelled()) {
-                    break;
+            }
+
+            if (wasCancelled()) {
+                return;
+            }
+        }
+
+        for (int i = 0; i < methodReferences.size(); i++) {
+            MethodReference methodReference = methodReferences.get(i);
+            ClassHolder cls = classes.get(methodReference.getClassName());
+            if (cls == null) {
+                continue;
+            }
+            MethodHolder method = cls.getMethod(methodReference.getDescriptor());
+            if (method == null) {
+                continue;
+            }
+
+            if (method.getProgram() != null) {
+                if (!inlining.hasUsages(methodReference)) {
+                    inlining.removeUsages(method.getProgram());
+                    method.setProgram(null);
                 }
+            }
+
+            if (wasCancelled()) {
+                return;
             }
         }
     }
