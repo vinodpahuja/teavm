@@ -1,5 +1,5 @@
 /*
- *  Copyright 2014 Alexey Andreev.
+ *  Copyright 2020 Alexey Andreev.
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -13,43 +13,43 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-/*
- *  Licensed to the Apache Software Foundation (ASF) under one or more
- *  contributor license agreements.  See the NOTICE file distributed with
- *  this work for additional information regarding copyright ownership.
- *  The ASF licenses this file to You under the Apache License, Version 2.0
- *  (the "License"); you may not use this file except in compliance with
- *  the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- */
 
-package org.teavm.classlib.java.util;
+package org.teavm.classlib.java.util.concurrent;
 
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
 import org.teavm.classlib.java.io.TSerializable;
-import org.teavm.classlib.java.lang.*;
+import org.teavm.classlib.java.lang.TCloneNotSupportedException;
+import org.teavm.classlib.java.lang.TCloneable;
+import org.teavm.classlib.java.lang.TIllegalArgumentException;
+import org.teavm.classlib.java.lang.TIllegalStateException;
+import org.teavm.classlib.java.lang.TObject;
+import org.teavm.classlib.java.util.TAbstractCollection;
+import org.teavm.classlib.java.util.TAbstractMap;
+import org.teavm.classlib.java.util.TAbstractSet;
+import org.teavm.classlib.java.util.TCollection;
+import org.teavm.classlib.java.util.TConcurrentModificationException;
+import org.teavm.classlib.java.util.TIterator;
+import org.teavm.classlib.java.util.TMap;
+import org.teavm.classlib.java.util.TNoSuchElementException;
+import org.teavm.classlib.java.util.TSet;
 import org.teavm.interop.Rename;
 
-public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TSerializable {
+public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TSerializable {
     transient int elementCount;
     transient HashEntry<K, V>[] elementData;
     transient int modCount;
+    transient volatile int version;
     private static final int DEFAULT_SIZE = 16;
     final float loadFactor;
     int threshold;
+    private transient TSet<K> cachedKeySet;
+    private transient TCollection<V> cachedValues;
 
     static class HashEntry<K, V> extends TMapEntry<K, V> {
         final int origKeyHash;
-
         HashEntry<K, V> next;
+        volatile int version;
 
         HashEntry(K theKey, int hash) {
             super(theKey, null);
@@ -79,9 +79,9 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         HashEntry<K, V> currentEntry;
         HashEntry<K, V> prevEntry;
 
-        final THashMap<K, V> associatedMap;
+        final TConcurrentHashMap<K, V> associatedMap;
 
-        AbstractMapIterator(THashMap<K, V> hm) {
+        AbstractMapIterator(TConcurrentHashMap<K, V> hm) {
             associatedMap = hm;
             expectedModCount = hm.modCount;
             futureEntry = null;
@@ -140,26 +140,25 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
             expectedModCount++;
             associatedMap.modCount++;
             associatedMap.elementCount--;
-
         }
     }
 
 
     private static class EntryIterator<K, V> extends AbstractMapIterator<K, V>
-            implements TIterator<TMap.Entry<K, V>> {
-        EntryIterator(THashMap<K, V> map) {
+            implements TIterator<Entry<K, V>> {
+        EntryIterator(TConcurrentHashMap<K, V> map) {
             super(map);
         }
 
         @Override
-        public TMap.Entry<K, V> next() {
+        public Entry<K, V> next() {
             makeNext();
             return currentEntry;
         }
     }
 
     private static class KeyIterator<K, V> extends AbstractMapIterator<K, V> implements TIterator<K> {
-        KeyIterator(THashMap<K, V> map) {
+        KeyIterator(TConcurrentHashMap<K, V> map) {
             super(map);
         }
 
@@ -171,7 +170,7 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
     }
 
     private static class ValueIterator<K, V> extends AbstractMapIterator<K, V> implements TIterator<V> {
-        ValueIterator(THashMap<K, V> map) {
+        ValueIterator(TConcurrentHashMap<K, V> map) {
             super(map);
         }
 
@@ -182,14 +181,14 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         }
     }
 
-    static class HashMapEntrySet<K, V> extends TAbstractSet<TMap.Entry<K, V>> {
-        private final THashMap<K, V> associatedMap;
+    static class HashMapEntrySet<K, V> extends TAbstractSet<Entry<K, V>> {
+        private final TConcurrentHashMap<K, V> associatedMap;
 
-        public HashMapEntrySet(THashMap<K, V> hm) {
+        public HashMapEntrySet(TConcurrentHashMap<K, V> hm) {
             associatedMap = hm;
         }
 
-        THashMap<K, V> hashMap() {
+        TConcurrentHashMap<K, V> hashMap() {
             return associatedMap;
         }
 
@@ -206,9 +205,9 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         @Override
         public boolean remove(Object object) {
             if (object instanceof TMap.Entry) {
-                TMap.Entry<?, ?> oEntry = (TMap.Entry<?, ?>) object;
-                TMap.Entry<K, V> entry = associatedMap.getEntry(oEntry.getKey());
-                if (valuesEq(entry, oEntry)) {
+                Entry<?, ?> oEntry = (Entry<?, ?>) object;
+                HashEntry<K, V> entry = associatedMap.getEntryByKeyAndValue(oEntry.getKey(), oEntry.getValue());
+                if (entry != null) {
                     associatedMap.removeEntry(entry);
                     return true;
                 }
@@ -219,22 +218,14 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         @Override
         public boolean contains(Object object) {
             if (object instanceof TMap.Entry) {
-                TMap.Entry<?, ?> oEntry = (TMap.Entry<?, ?>) object;
-                TMap.Entry<K, V> entry = associatedMap.getEntry(oEntry.getKey());
-                return valuesEq(entry, oEntry);
+                Entry<?, ?> oEntry = (Entry<?, ?>) object;
+                return associatedMap.getEntryByKeyAndValue(oEntry.getKey(), oEntry.getValue()) != null;
             }
             return false;
         }
 
-        private static boolean valuesEq(TMap.Entry<?, ?> entry, TMap.Entry<?, ?> oEntry) {
-            return entry != null
-                    && (entry.getValue() == null
-                    ? oEntry.getValue() == null
-                    : areEqualValues(entry.getValue(), oEntry.getValue()));
-        }
-
         @Override
-        public TIterator<TMap.Entry<K, V>> iterator() {
+        public TIterator<Entry<K, V>> iterator() {
             return new EntryIterator<>(associatedMap);
         }
     }
@@ -244,11 +235,11 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         return new HashEntry[s];
     }
 
-    public THashMap() {
+    public TConcurrentHashMap() {
         this(DEFAULT_SIZE);
     }
 
-    public THashMap(int capacity) {
+    public TConcurrentHashMap(int capacity) {
         this(capacity, 0.75f);  // default load factor of 0.75
     }
 
@@ -268,19 +259,7 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         return x + 1;
     }
 
-    /**
-     * Constructs a new {@code HashMap} instance with the specified capacity and
-     * load factor.
-     *
-     * @param capacity
-     *            the initial capacity of this hash map.
-     * @param loadFactor
-     *            the initial load factor.
-     * @throws IllegalArgumentException
-     *                when the capacity is less than zero or the load factor is
-     *                less or equal to zero.
-     */
-    public THashMap(int capacity, float loadFactor) {
+    public TConcurrentHashMap(int capacity, float loadFactor) {
         if (capacity >= 0 && loadFactor > 0) {
             capacity = calculateCapacity(capacity);
             elementCount = 0;
@@ -292,7 +271,7 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         }
     }
 
-    public THashMap(TMap<? extends K, ? extends V> map) {
+    public TConcurrentHashMap(TMap<? extends K, ? extends V> map) {
         this(calculateCapacity(map.size()));
         putAllImpl(map);
     }
@@ -303,6 +282,7 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
             elementCount = 0;
             Arrays.fill(elementData, null);
             modCount++;
+            version++;
         }
     }
 
@@ -310,7 +290,7 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
     @SuppressWarnings("unchecked")
     public TObject clone0() {
         try {
-            THashMap<K, V> map = (THashMap<K, V>) super.clone();
+            TConcurrentHashMap<K, V> map = (TConcurrentHashMap<K, V>) super.clone();
             map.elementCount = 0;
             map.elementData = newElementArray(elementData.length);
             map.putAll(this);
@@ -327,38 +307,56 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
 
     @Override
     public boolean containsKey(Object key) {
-        HashEntry<K, V> m = getEntry(key);
-        return m != null;
+        return getEntry(key) != null;
     }
 
     @Override
     public boolean containsValue(Object value) {
-        if (value != null) {
-            for (int i = 0; i < elementData.length; i++) {
-                HashEntry<K, V> entry = elementData[i];
-                while (entry != null) {
-                    if (areEqualValues(value, entry.value)) {
-                        return true;
+        repeatTable: do {
+            int lock = version;
+
+            if (value != null) {
+                for (int i = 0; i < elementData.length; i++) {
+                    repeatEntry: do {
+                        HashEntry<K, V> first = elementData[i];
+                        HashEntry<K, V> entry = first;
+                        if (entry == null) {
+                            break;
+                        }
+
+                        int elementLock = entry.version;
+                        while (entry != null) {
+                            boolean equal = areEqualValues(value, entry.value);
+                            if (lock != version) {
+                                continue repeatTable;
+                            }
+                            if (equal) {
+                                if (first != elementData[i] || elementLock != first.version) {
+                                    continue repeatEntry;
+                                }
+                                return true;
+                            }
+                            entry = entry.next;
+                        }
+                    } while (true);
+                }
+            } else {
+                for (int i = 0; i < elementData.length; i++) {
+                    HashEntry<K, V> entry = elementData[i];
+                    while (entry != null) {
+                        if (entry.value == null) {
+                            return true;
+                        }
+                        entry = entry.next;
                     }
-                    entry = entry.next;
                 }
             }
-        } else {
-            for (int i = 0; i < elementData.length; i++) {
-                HashEntry<K, V> entry = elementData[i];
-                while (entry != null) {
-                    if (entry.value == null) {
-                        return true;
-                    }
-                    entry = entry.next;
-                }
-            }
-        }
-        return false;
+            return false;
+        } while (true);
     }
 
     @Override
-    public TSet<TMap.Entry<K, V>> entrySet() {
+    public TSet<Entry<K, V>> entrySet() {
         return new HashMapEntrySet<>(this);
     }
 
@@ -372,23 +370,95 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
     }
 
     final HashEntry<K, V> getEntry(Object key) {
-        HashEntry<K, V> m;
-        if (key == null) {
-            m = findNullKeyEntry();
-        } else {
-            int hash = computeHashCode(key);
-            int index = hash & (elementData.length - 1);
-            m = findNonNullKeyEntry(key, index, hash);
-        }
-        return m;
+        return getEntry(key, key != null ? computeHashCode(key) : 0);
     }
 
-    final HashEntry<K, V> findNonNullKeyEntry(Object key, int index, int keyHash) {
-        HashEntry<K, V> m = elementData[index];
-        while (m != null && (m.origKeyHash != keyHash || !areEqualKeys(key, m.key))) {
-            m = m.next;
+    final HashEntry<K, V> getEntry(Object key, int hash) {
+        if (key == null) {
+            return findNullKeyEntry();
+        } else {
+            repeatTable:
+            do {
+                int lock = version;
+                int index = hash & (elementData.length - 1);
+
+                repeatElement:
+                do {
+                    HashEntry<K, V> first = elementData[index];
+                    if (first == null) {
+                        return null;
+                    }
+                    HashEntry<K, V> m = first;
+                    int elementLock = first.version;
+
+                    while (m != null) {
+                        if (m.origKeyHash == hash) {
+                            boolean equal = areEqualKeys(key, m.key);
+                            if (version != lock) {
+                                continue repeatTable;
+                            }
+                            if (equal) {
+                                if (first != elementData[index] || first.version != elementLock) {
+                                    continue repeatElement;
+                                }
+                                return m;
+                            }
+                        }
+                        m = m.next;
+                    }
+
+                    return null;
+                } while (true);
+            } while (true);
         }
-        return m;
+    }
+
+    final HashEntry<K, V> getEntryByKeyAndValue(Object key, Object value) {
+        if (key == null) {
+            return findNullKeyEntry();
+        } else {
+            int hash = computeHashCode(key);
+            repeatTable:
+            do {
+                int lock = version;
+                int index = hash & (elementData.length - 1);
+
+                repeatElement:
+                do {
+                    HashEntry<K, V> first = elementData[index];
+                    if (first == null) {
+                        return null;
+                    }
+                    HashEntry<K, V> m = first;
+                    int elementLock = first.version;
+
+                    while (m != null) {
+                        if (m.origKeyHash == hash) {
+                            boolean equal = areEqualKeys(key, m.key);
+                            if (version != lock) {
+                                continue repeatTable;
+                            }
+                            if (equal) {
+                                if (first != elementData[index] || first.version != elementLock) {
+                                    continue repeatElement;
+                                }
+                                equal = areEqualValues(value, m.value);
+                                if (version != lock) {
+                                    continue repeatTable;
+                                }
+                                if (first != elementData[index] || first.version != elementLock) {
+                                    continue repeatElement;
+                                }
+                                return equal ? m : null;
+                            }
+                        }
+                        m = m.next;
+                    }
+
+                    return null;
+                } while (true);
+            } while (true);
+        }
     }
 
     final HashEntry<K, V> findNullKeyEntry() {
@@ -412,17 +482,21 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
                     return containsKey(object);
                 }
                 @Override public int size() {
-                    return THashMap.this.size();
+                    return TConcurrentHashMap.this.size();
                 }
                 @Override public void clear() {
-                    THashMap.this.clear();
+                    TConcurrentHashMap.this.clear();
                 }
                 @Override public boolean remove(Object key) {
-                    HashEntry<K, V> entry = THashMap.this.removeEntry(key);
-                    return entry != null;
+                    HashEntry<K, V> entry = TConcurrentHashMap.this.getEntry(key);
+                    if (entry != null) {
+                        TConcurrentHashMap.this.removeEntry(entry);
+                        return true;
+                    }
+                    return false;
                 }
                 @Override public TIterator<K> iterator() {
-                    return new KeyIterator<>(THashMap.this);
+                    return new KeyIterator<>(TConcurrentHashMap.this);
                 }
             };
         }
@@ -435,26 +509,15 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
     }
 
     V putImpl(K key, V value) {
-        HashEntry<K, V> entry;
-        if (key == null) {
-            entry = findNullKeyEntry();
-            if (entry == null) {
-                modCount++;
-                entry = createHashedEntry(null, 0, 0);
-                if (++elementCount > threshold) {
-                    rehash();
-                }
-            }
-        } else {
-            int hash = computeHashCode(key);
-            int index = hash & (elementData.length - 1);
-            entry = findNonNullKeyEntry(key, index, hash);
-            if (entry == null) {
-                modCount++;
-                entry = createHashedEntry(key, index, hash);
-                if (++elementCount > threshold) {
-                    rehash();
-                }
+        int hash = key != null ? computeHashCode(key) : 0;
+        HashEntry<K, V> entry = getEntry(key, hash);
+        int index = hash & (elementData.length - 1);
+
+        if (entry == null) {
+            entry = createHashedEntry(key, index, hash);
+            modCount++;
+            if (++elementCount > threshold) {
+                rehash();
             }
         }
 
@@ -482,9 +545,8 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         if (capacity > threshold) {
             rehash(capacity);
         }
-        for (TIterator<? extends TMap.Entry<? extends K, ? extends V>> iter = map.entrySet().iterator();
-                iter.hasNext();) {
-            TMap.Entry<? extends K, ? extends V> entry = iter.next();
+        for (TIterator<? extends Entry<? extends K, ? extends V>> iter = map.entrySet().iterator(); iter.hasNext();) {
+            Entry<? extends K, ? extends V> entry = iter.next();
             putImpl(entry.getKey(), entry.getValue());
         }
     }
@@ -506,6 +568,7 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         }
         elementData = newData;
         computeThreshold();
+        version++;
     }
 
     void rehash() {
@@ -514,11 +577,12 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
 
     @Override
     public V remove(Object key) {
-        HashEntry<K, V> entry = removeEntry(key);
-        if (entry != null) {
-            return entry.value;
+        HashEntry<K, V> entry = getEntry(key);
+        if (entry == null) {
+            return null;
         }
-        return null;
+        removeEntry(entry);
+        return entry.value;
     }
 
     final void removeEntry(HashEntry<K, V> entry) {
@@ -527,46 +591,14 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
         if (m == entry) {
             elementData[index] = entry.next;
         } else {
+            m.version++;
             while (m.next != entry) {
                 m = m.next;
             }
             m.next = entry.next;
-
         }
         modCount++;
         elementCount--;
-    }
-
-    final HashEntry<K, V> removeEntry(Object key) {
-        int index = 0;
-        HashEntry<K, V> entry;
-        HashEntry<K, V> last = null;
-        if (key != null) {
-            int hash = computeHashCode(key);
-            index = hash & (elementData.length - 1);
-            entry = elementData[index];
-            while (entry != null && !(entry.origKeyHash == hash && areEqualKeys(key, entry.key))) {
-                last = entry;
-                entry = entry.next;
-            }
-        } else {
-            entry = elementData[0];
-            while (entry != null && entry.key != null) {
-                last = entry;
-                entry = entry.next;
-            }
-        }
-        if (entry == null) {
-            return null;
-        }
-        if (last == null) {
-            elementData[index] = entry.next;
-        } else {
-            last.next = entry.next;
-        }
-        modCount++;
-        elementCount--;
-        return entry;
     }
 
     @Override
@@ -582,13 +614,13 @@ public class THashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TS
                     return containsValue(object);
                 }
                 @Override public int size() {
-                    return THashMap.this.size();
+                    return TConcurrentHashMap.this.size();
                 }
                 @Override public void clear() {
-                    THashMap.this.clear();
+                    TConcurrentHashMap.this.clear();
                 }
                 @Override public TIterator<V> iterator() {
-                    return new ValueIterator<>(THashMap.this);
+                    return new ValueIterator<>(TConcurrentHashMap.this);
                 }
             };
         }
