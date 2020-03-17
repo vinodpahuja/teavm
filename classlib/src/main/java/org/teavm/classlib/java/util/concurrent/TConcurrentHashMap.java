@@ -18,6 +18,10 @@ package org.teavm.classlib.java.util.concurrent;
 
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
+import java.util.Objects;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.teavm.classlib.java.io.TSerializable;
 import org.teavm.classlib.java.lang.TCloneNotSupportedException;
 import org.teavm.classlib.java.lang.TCloneable;
@@ -35,11 +39,11 @@ import org.teavm.classlib.java.util.TNoSuchElementException;
 import org.teavm.classlib.java.util.TSet;
 import org.teavm.interop.Rename;
 
-public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TCloneable, TSerializable {
+public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V>
+        implements TConcurrentMap<K, V>, TCloneable, TSerializable {
     transient int elementCount;
     transient HashEntry<K, V>[] elementData;
     transient int modCount;
-    transient volatile int version;
     private static final int DEFAULT_SIZE = 16;
     final float loadFactor;
     int threshold;
@@ -49,16 +53,11 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
     static class HashEntry<K, V> extends TMapEntry<K, V> {
         final int origKeyHash;
         HashEntry<K, V> next;
-        volatile int version;
+        boolean removed;
 
         HashEntry(K theKey, int hash) {
             super(theKey, null);
             this.origKeyHash = hash;
-        }
-
-        HashEntry(K theKey, V theValue) {
-            super(theKey, theValue);
-            origKeyHash = theKey == null ? 0 : computeHashCode(theKey);
         }
 
         @Override
@@ -282,7 +281,6 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
             elementCount = 0;
             Arrays.fill(elementData, null);
             modCount++;
-            version++;
         }
     }
 
@@ -313,30 +311,33 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
     @Override
     public boolean containsValue(Object value) {
         repeatTable: do {
-            int lock = version;
+            HashEntry<K, V>[] table = elementData;
 
             if (value != null) {
-                for (int i = 0; i < elementData.length; i++) {
+                for (int i = 0; i < table.length; i++) {
                     repeatEntry: do {
-                        HashEntry<K, V> first = elementData[i];
-                        HashEntry<K, V> entry = first;
-                        if (entry == null) {
+                        HashEntry<K, V> first = table[i];
+                        if (first == null) {
                             break;
                         }
+                        HashEntry<K, V> entry = first;
 
-                        int elementLock = entry.version;
                         while (entry != null) {
                             boolean equal = areEqualValues(value, entry.value);
-                            if (lock != version) {
+                            if (table != elementData) {
                                 continue repeatTable;
                             }
                             if (equal) {
-                                if (first != elementData[i] || elementLock != first.version) {
+                                if (entry.removed) {
                                     continue repeatEntry;
                                 }
                                 return true;
                             }
                             entry = entry.next;
+                        }
+
+                        if (first == table[i]) {
+                            break;
                         }
                     } while (true);
                 }
@@ -369,36 +370,194 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
         return null;
     }
 
-    final HashEntry<K, V> getEntry(Object key) {
+    @Override
+    public boolean remove(Object key, Object value) {
+        HashEntry<K, V> entry = getEntryByKeyAndValue(key, value);
+        if (entry != null) {
+            removeEntry(entry);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean replace(K key, V oldValue, V newValue) {
+        HashEntry<K, V> entry = getEntryByKeyAndValue(key, oldValue);
+        if (entry != null) {
+            entry.setValue(newValue);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public V replace(K key, V value) {
+        HashEntry<K, V> entry = getEntry(key);
+        if (entry == null) {
+            return null;
+        }
+
+        V result = entry.getValue();
+        entry.setValue(value);
+        return result;
+    }
+
+    @Override
+    public V getOrDefault(Object key, V defaultValue) {
+        HashEntry<K, V> m = getEntry(key);
+        return m != null ? m.getValue() : defaultValue;
+    }
+
+    @Override
+    public void forEach(BiConsumer<? super K, ? super V> action) {
+        Objects.requireNonNull(action);
+        HashEntry<K, V>[] table = elementData;
+        for (HashEntry<K, V> entry : table) {
+            while (entry != null) {
+                if (!entry.removed) {
+                    action.accept(entry.getKey(), entry.getValue());
+                }
+                entry = entry.next;
+            }
+        }
+    }
+
+    @Override
+    public V putIfAbsent(K key, V value) {
+        int hash = key != null ? computeHashCode(key) : 0;
+        HashEntry<K, V> entry = getEntry(key, hash);
+        int index = hash & (elementData.length - 1);
+
+        if (entry != null) {
+            return entry.getValue();
+        }
+        entry = createHashedEntry(key, index, hash);
+        entry.setValue(value);
+        modCount++;
+        if (++elementCount > threshold) {
+            rehash();
+        }
+        return null;
+    }
+
+    @Override
+    public void replaceAll(BiFunction<? super K,? super V,? extends V> function) {
+        Objects.requireNonNull(function);
+        HashEntry<K, V>[] table = elementData;
+        for (HashEntry<K, V> entry : table) {
+            while (entry != null) {
+                if (!entry.removed) {
+                    V newValue = function.apply(entry.getKey(), entry.getValue());
+                    Objects.requireNonNull(newValue);
+                    entry.setValue(newValue);
+                }
+                entry = entry.next;
+            }
+        }
+    }
+
+    @Override
+    public V computeIfAbsent(K key, Function<? super K, ? extends V> mappingFunction) {
+        int hash = key != null ? computeHashCode(key) : 0;
+        HashEntry<K, V> entry = getEntry(key, hash);
+        int index = hash & (elementData.length - 1);
+        if (entry != null) {
+            return entry.getValue();
+        }
+
+        V newValue = mappingFunction.apply(key);
+        entry = getEntry(key, hash);
+        if (entry != null) {
+            return entry.getValue();
+        }
+        entry = createHashedEntry(key, index, hash);
+        entry.setValue(newValue);
+        return newValue;
+    }
+
+    @Override
+    public V computeIfPresent(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+        int hash = key != null ? computeHashCode(key) : 0;
+
+        while (true) {
+            HashEntry<K, V> entry = getEntry(key, hash);
+            if (entry == null) {
+                return null;
+            }
+
+            V oldValue = entry.getValue();
+            V newValue = remappingFunction.apply(key, oldValue);
+            entry = getEntry(key, hash);
+            if (entry == null) {
+                return null;
+            } else if (entry.getValue() == oldValue) {
+                entry.setValue(newValue);
+                return newValue;
+            }
+        }
+    }
+
+    @Override
+    public V compute(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+        int hash = key != null ? computeHashCode(key) : 0;
+
+        while (true) {
+            HashEntry<K, V> entry = getEntry(key, hash);
+            int index = hash & (elementData.length - 1);
+            if (entry == null) {
+                V newValue = remappingFunction.apply(key, null);
+                if (getEntry(key, hash) == null) {
+                    if (newValue != null) {
+                        entry = createHashedEntry(key, hash, index);
+                        entry.setValue(newValue);
+                    }
+                    return newValue;
+                }
+            } else {
+                V oldValue = entry.getValue();
+                V newValue = remappingFunction.apply(key, oldValue);
+                entry = getEntry(key, hash);
+                if (entry != null && entry.getValue() == oldValue) {
+                    if (newValue == null) {
+                        removeEntry(entry);
+                    } else {
+                        entry.setValue(newValue);
+                    }
+                    return newValue;
+                }
+            }
+        }
+    }
+
+    private HashEntry<K, V> getEntry(Object key) {
         return getEntry(key, key != null ? computeHashCode(key) : 0);
     }
 
-    final HashEntry<K, V> getEntry(Object key, int hash) {
+    private HashEntry<K, V> getEntry(Object key, int hash) {
         if (key == null) {
             return findNullKeyEntry();
         } else {
             repeatTable:
             do {
-                int lock = version;
-                int index = hash & (elementData.length - 1);
+                HashEntry<K, V>[] table = elementData;
+                int index = hash & (table.length - 1);
 
                 repeatElement:
                 do {
-                    HashEntry<K, V> first = elementData[index];
+                    HashEntry<K, V> first = table[index];
                     if (first == null) {
                         return null;
                     }
                     HashEntry<K, V> m = first;
-                    int elementLock = first.version;
 
                     while (m != null) {
-                        if (m.origKeyHash == hash) {
+                        if (!m.removed && m.origKeyHash == hash) {
                             boolean equal = areEqualKeys(key, m.key);
-                            if (version != lock) {
+                            if (table != elementData) {
                                 continue repeatTable;
                             }
                             if (equal) {
-                                if (first != elementData[index] || first.version != elementLock) {
+                                if (m.removed) {
                                     continue repeatElement;
                                 }
                                 return m;
@@ -407,58 +566,57 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
                         m = m.next;
                     }
 
-                    return null;
+                    if (first == table[index]) {
+                        return null;
+                    }
                 } while (true);
             } while (true);
         }
     }
 
     final HashEntry<K, V> getEntryByKeyAndValue(Object key, Object value) {
-        if (key == null) {
-            return findNullKeyEntry();
-        } else {
-            int hash = computeHashCode(key);
-            repeatTable:
+        int hash = key != null ? computeHashCode(key) : 0;
+        repeatTable:
+        do {
+            HashEntry<K, V>[] table = elementData;
+            int index = hash & (table.length - 1);
+
+            repeatElement:
             do {
-                int lock = version;
-                int index = hash & (elementData.length - 1);
+                HashEntry<K, V> first = table[index];
+                if (first == null) {
+                    return null;
+                }
+                HashEntry<K, V> m = first;
 
-                repeatElement:
-                do {
-                    HashEntry<K, V> first = elementData[index];
-                    if (first == null) {
-                        return null;
-                    }
-                    HashEntry<K, V> m = first;
-                    int elementLock = first.version;
-
-                    while (m != null) {
-                        if (m.origKeyHash == hash) {
-                            boolean equal = areEqualKeys(key, m.key);
-                            if (version != lock) {
+                while (m != null) {
+                    if (m.origKeyHash == hash) {
+                        boolean equal = key != null ? areEqualKeys(key, m.key) : m.key == null;
+                        if (table != elementData) {
+                            continue repeatTable;
+                        }
+                        if (m.removed) {
+                            continue repeatElement;
+                        }
+                        if (equal) {
+                            equal = areEqualValues(value, m.value);
+                            if (table != elementData) {
                                 continue repeatTable;
                             }
-                            if (equal) {
-                                if (first != elementData[index] || first.version != elementLock) {
-                                    continue repeatElement;
-                                }
-                                equal = areEqualValues(value, m.value);
-                                if (version != lock) {
-                                    continue repeatTable;
-                                }
-                                if (first != elementData[index] || first.version != elementLock) {
-                                    continue repeatElement;
-                                }
-                                return equal ? m : null;
+                            if (m.removed) {
+                                continue repeatElement;
                             }
+                            return equal ? m : null;
                         }
-                        m = m.next;
                     }
+                    m = m.next;
+                }
 
+                if (first == table[index]) {
                     return null;
-                } while (true);
+                }
             } while (true);
-        }
+        } while (true);
     }
 
     final HashEntry<K, V> findNullKeyEntry() {
@@ -568,7 +726,6 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
         }
         elementData = newData;
         computeThreshold();
-        version++;
     }
 
     void rehash() {
@@ -591,7 +748,6 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
         if (m == entry) {
             elementData[index] = entry.next;
         } else {
-            m.version++;
             while (m.next != entry) {
                 m = m.next;
             }
@@ -599,6 +755,7 @@ public class TConcurrentHashMap<K, V> extends TAbstractMap<K, V> implements TClo
         }
         modCount++;
         elementCount--;
+        entry.removed = true;
     }
 
     @Override

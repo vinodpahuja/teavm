@@ -40,7 +40,7 @@ public interface TMap<K, V> {
 
     V get(Object key);
 
-    default V getOrDefault(K key, V defaultValue) {
+    default V getOrDefault(Object key, V defaultValue) {
         return containsKey(key) ? get(key) : defaultValue;
     }
 
@@ -93,6 +93,7 @@ public interface TMap<K, V> {
     }
 
     default V computeIfAbsent(K key, Function<? super K, ? extends V> mappingFunction) {
+        Objects.requireNonNull(mappingFunction);
         V v = get(key);
         if (v == null) {
             V newValue = mappingFunction.apply(key);
@@ -105,6 +106,7 @@ public interface TMap<K, V> {
     }
 
     default V computeIfPresent(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+        Objects.requireNonNull(remappingFunction);
         V v = get(key);
         if (v != null) {
             V oldValue = v;
@@ -120,6 +122,7 @@ public interface TMap<K, V> {
     }
 
     default V compute(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+        Objects.requireNonNull(remappingFunction);
         V oldValue = get(key);
         V newValue = remappingFunction.apply(key, oldValue);
         if (oldValue != null) {
@@ -135,9 +138,9 @@ public interface TMap<K, V> {
     }
 
     default V merge(K key, V value, BiFunction<? super V, ? super V, ? extends V> remappingFunction) {
+        Objects.requireNonNull(remappingFunction);
         V oldValue = get(key);
-        V newValue = (oldValue == null) ? value
-                : remappingFunction.apply(oldValue, value);
+        V newValue = (oldValue == null) ? value : remappingFunction.apply(oldValue, value);
         if (newValue == null) {
             remove(key);
         } else {
@@ -147,6 +150,7 @@ public interface TMap<K, V> {
     }
 
     default void forEach(BiConsumer<? super K, ? super V> action) {
+        Objects.requireNonNull(action);
         final TIterator<Entry<K, V>> iterator = entrySet().iterator();
         while (iterator.hasNext()) {
             final Entry<K, V> entry = iterator.next();
@@ -274,5 +278,14 @@ public interface TMap<K, V> {
 
     static <K, V> TMap.Entry<K, V> entry(K k, V v) {
         return new TMapEntry<>(requireNonNull(k), requireNonNull(v));
+    }
+
+    default void replaceAll(BiFunction<? super K,? super V,? extends V> function) {
+        Objects.requireNonNull(function);
+        TIterator<Entry<K, V>> iterator = entrySet().iterator();
+        while (iterator.hasNext()) {
+            Entry<K, V> entry = iterator.next();
+            entry.setValue(function.apply(entry.getKey(), entry.getValue()));
+        }
     }
 }
