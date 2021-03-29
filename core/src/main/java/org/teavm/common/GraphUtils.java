@@ -349,7 +349,7 @@ public final class GraphUtils {
     }
 
     public static void splitIrreducibleGraph(Graph graph, int[] weights, GraphSplittingBackend backend) {
-        new IrreducibleGraphConverter().convertToReducible(graph, weights, backend);
+        new IrreducibleGraphSplitter(backend, graph, weights).splitLoops();
     }
 
     public static int[][] findDominanceFrontiers(Graph cfg, DominatorTree domTree) {
