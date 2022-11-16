@@ -16,7 +16,6 @@
 package org.teavm.backend.javascript.rendering;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -92,13 +91,14 @@ public class AstWriter {
     public static final int PRECEDENCE_COMMA = 18;
     private SourceWriter writer;
     private Map<String, NameEmitter> nameMap = new HashMap<>();
+    private boolean rootScope = true;
     private Set<String> aliases = new HashSet<>();
 
     public AstWriter(SourceWriter writer) {
         this.writer = writer;
     }
 
-    private void declareName(String name) {
+    public void declareName(String name) {
         if (nameMap.containsKey(name)) {
             return;
         }
@@ -124,13 +124,24 @@ public class AstWriter {
     }
 
     public void hoist(AstNode node) {
+        declareName("arguments");
         node.visit(n -> {
             if (n instanceof Scope) {
-                Scope scope = (Scope) n;
+                var scope = (Scope) n;
                 if (scope.getSymbolTable() != null) {
-                    for (String name : scope.getSymbolTable().keySet()) {
+                    for (var name : scope.getSymbolTable().keySet()) {
                         declareName(name);
                     }
+                }
+            } else if (n instanceof CatchClause) {
+                var clause = (CatchClause) n;
+                var name = clause.getVarName().getIdentifier();
+                declareName(name);
+            } else if (n instanceof VariableInitializer) {
+                var initializer = (VariableInitializer) n;
+                if (initializer.getTarget() instanceof Name) {
+                    var id = ((Name) initializer.getTarget()).getIdentifier();
+                    declareName(id);
                 }
             }
             return true;
@@ -488,10 +499,10 @@ public class AstWriter {
     private void print(PropertyGet node) throws IOException {
         print(node.getLeft(), PRECEDENCE_MEMBER);
         writer.append('.');
-        Map<String, NameEmitter> oldNameMap = nameMap;
-        nameMap = Collections.emptyMap();
+        var oldRootScope = rootScope;
+        rootScope = false;
         print(node.getRight());
-        nameMap = oldNameMap;
+        rootScope = oldRootScope;
     }
 
     private void print(FunctionCall node, int precedence) throws IOException {
@@ -627,11 +638,20 @@ public class AstWriter {
     }
 
     private void print(Name node, int precedence) throws IOException {
-        NameEmitter alias = nameMap.get(node.getIdentifier());
-        if (alias == null) {
-            alias = prec -> writer.append(node.getIdentifier());
+        if (rootScope) {
+            NameEmitter alias = nameMap.get(node.getIdentifier());
+            if (alias == null) {
+                if (node.getIdentifier().startsWith("$rt_") || node.getIdentifier().startsWith("Long_")
+                        || node.getIdentifier().equals("Long")) {
+                    alias = prec -> writer.append(node.getIdentifier());
+                } else {
+                    alias = prec -> writer.append("$rt_globals.").append(node.getIdentifier());
+                }
+            }
+            alias.emit(precedence);
+        } else {
+            writer.append(node.getIdentifier());
         }
-        alias.emit(precedence);
     }
 
     private void print(RegExpLiteral node) throws IOException {
@@ -662,10 +682,10 @@ public class AstWriter {
         } else if (node.isSetterMethod()) {
             writer.append("set ");
         }
-        Map<String, NameEmitter> oldNameMap = nameMap;
-        nameMap = Collections.emptyMap();
+        var oldRootScope = rootScope;
+        rootScope = false;
         print(node.getLeft());
-        nameMap = oldNameMap;
+        rootScope = oldRootScope;
         if (!node.isMethod()) {
             writer.ws().append(':').ws();
         }

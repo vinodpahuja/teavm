@@ -22,7 +22,7 @@ import java.io.StringReader;
 import org.junit.Test;
 import org.mozilla.javascript.CompilerEnvirons;
 import org.mozilla.javascript.Context;
-import org.mozilla.javascript.ast.AstRoot;
+import org.mozilla.javascript.ast.FunctionNode;
 import org.teavm.backend.javascript.codegen.SourceWriter;
 import org.teavm.backend.javascript.codegen.SourceWriterBuilder;
 
@@ -140,7 +140,7 @@ public class AstWriterTest {
 
     @Test
     public void writesConst() throws IOException {
-        assertThat(transform("const x = 1,y = 2; alert(x,y);"), is("const x=1,y=2;alert(x,y);"));
+        assertThat(transform("const xx = 1,yy = 2; alert(xx,yy);"), is("const xx=1,yy=2;alert(xx,yy);"));
     }
 
     @Test
@@ -250,10 +250,16 @@ public class AstWriterTest {
         env.setLanguageVersion(Context.VERSION_1_8);
         JSParser factory = new JSParser(env);
         factory.enterFunction();
-        AstRoot rootNode = factory.parse(new StringReader(text), null, 0);
+        text = "function(a, b, c, x,y,z,f,g,j, test, performTrue, performFalse, foo, bar, array, i, alert, window,"
+                + "shouldProceed,proceed,cond,shouldPerform,perform,text,matchAny,matchSequence,"
+                + "shouldRepeat,close,matchChar) {"  + text + " }";
+        var rootNode = factory.parse(new StringReader(text), null, 0);
         factory.exitFunction();
         writer.hoist(rootNode);
-        writer.print(rootNode);
+        var node = ((FunctionNode) rootNode.getFirstChild()).getBody();
+        for (var child = node.getFirstChild(); child != null; child = child.getNext()) {
+            writer.print(child);
+        }
         return sb.toString();
     }
 }
